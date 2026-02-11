@@ -1,6 +1,5 @@
 use crate::api;
 use crate::config::{self, AppOptions};
-use crate::models::UserConfig;
 use crate::ui;
 use crate::units;
 use colored::*;
@@ -97,16 +96,12 @@ fn display_profile(opts: &AppOptions) {
 }
 
 async fn edit_profile(opts: &AppOptions) {
-    let mut config = config::load_user_config(opts).unwrap_or(UserConfig {
-        name: String::new(),
-        phone: String::new(),
-        client_id: None,
-        addresses: Vec::new(),
-        endereco_padrao: None,
-        nao_perguntar_unidade: false,
-    });
+    let mut config = config::load_user_config(opts).unwrap_or_default();
 
     println!("\n{}", "✏️  --- EDITAR PERFIL ---".cyan().bold());
+
+    let old_name = config.name.clone();
+    let old_phone = config.phone.clone();
 
     let name = ui::read_input(&format!(
         "Nome [{}]: ",
@@ -135,8 +130,11 @@ async fn edit_profile(opts: &AppOptions) {
     config::save_user_config(&config, opts);
     println!("{}", "Perfil salvo com sucesso!".green().bold());
 
-    // Register client to get client_id if we have name+phone but no client_id
-    if config.client_id.is_none() && !config.name.is_empty() && !config.phone.is_empty() {
+    // Re-fetch client_id if missing or if name/phone changed
+    let data_changed = config.name != old_name || config.phone != old_phone;
+    let needs_client_id = config.client_id.is_none() || data_changed;
+
+    if needs_client_id && !config.name.is_empty() && !config.phone.is_empty() {
         let sp = ui::Spinner::new("Carregando unidades...");
         if let Ok(all_units) = api::fetch_units().await {
             sp.stop();
@@ -145,13 +143,23 @@ async fn edit_profile(opts: &AppOptions) {
                 let ctx = api::ApiContext::from_unit(unit);
                 let sp2 = ui::Spinner::new("Registrando cliente...");
                 match api::register_client(&ctx, &config.name, &config.phone).await {
-                    Ok(client_id) => {
+                    Ok(result) => {
                         sp2.stop();
-                        config.client_id = Some(client_id);
+                        config.client_id = Some(result.client_id);
+                        if result.token.is_some() {
+                            config.auth_token = result.token;
+                        }
                         config::save_user_config(&config, opts);
-                        println!("Client ID obtido: {}", client_id.to_string().cyan());
+                        println!("Client ID obtido: {}", result.client_id.to_string().cyan());
                     }
-                    Err(_) => { drop(sp2); }
+                    Err(e) => {
+                        drop(sp2);
+                        eprintln!(
+                            "{}",
+                            format!("Aviso: não foi possível obter o ID do cliente: {}", e)
+                                .yellow()
+                        );
+                    }
                 }
             }
         } else {

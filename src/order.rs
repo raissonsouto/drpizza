@@ -11,18 +11,11 @@ pub async fn start_order_flow(opts: &AppOptions) {
     let menu_data = config::get_menu_data(&ctx, opts).await;
 
     if menu_data.is_empty() {
-        println!(
-            "{}",
-            "O cardápio está vazio. Verifique a conexão.".red()
-        );
+        println!("{}", "O cardápio está vazio. Verifique a conexão.".red());
         return;
     }
 
-    println!(
-        "{} {}",
-        "Conectado:".green(),
-        selected_unit.name
-    );
+    println!("{} {}", "Conectado:".green(), selected_unit.name);
 
     let mut cart: Vec<CartItem> = Vec::new();
     let mut total_price = 0.0;
@@ -32,11 +25,8 @@ pub async fn start_order_flow(opts: &AppOptions) {
         match menu::browse_menu_select(&menu_data) {
             Some(sel) => {
                 let mut item_price = sel.item.get_current_price();
-                let flavor_names: Vec<String> = sel
-                    .flavors
-                    .iter()
-                    .map(|f| f.name.clone())
-                    .collect();
+                let flavor_names: Vec<String> =
+                    sel.flavors.iter().map(|f| f.name.clone()).collect();
                 for f in &sel.flavors {
                     item_price += f.price;
                 }
@@ -84,10 +74,7 @@ pub async fn start_order_flow(opts: &AppOptions) {
     }
 
     // Checkout
-    println!(
-        "\n{}",
-        "📝 RESUMO DO PEDIDO".on_white().black().bold()
-    );
+    println!("\n{}", "📝 RESUMO DO PEDIDO".on_white().black().bold());
     println!("{}", "-------------------".bright_black());
 
     for item in &cart {
@@ -97,7 +84,10 @@ pub async fn start_order_flow(opts: &AppOptions) {
             format!("R$ {:.2}", item.price).green()
         );
         if !item.flavors.is_empty() {
-            println!("  Sabores: {}", item.flavors.join(", ").truecolor(150, 150, 150));
+            println!(
+                "  Sabores: {}",
+                item.flavors.join(", ").truecolor(150, 150, 150)
+            );
         }
         println!("  Borda: {}", item.crust.truecolor(150, 150, 150));
     }
@@ -111,7 +101,13 @@ pub async fn start_order_flow(opts: &AppOptions) {
     let user_config = config::load_user_config(opts);
     let (customer_name, customer_phone) = gather_customer_info(&user_config);
 
-    println!("{} {}  {} {}", "Cliente:".yellow(), customer_name.bold(), "Telefone:".yellow(), customer_phone);
+    println!(
+        "{} {}  {} {}",
+        "Cliente:".yellow(),
+        customer_name.bold(),
+        "Telefone:".yellow(),
+        customer_phone
+    );
 
     // Register client to get client_id
     ensure_client_id(&ctx, &customer_name, &customer_phone, &user_config, opts).await;
@@ -123,16 +119,19 @@ pub async fn start_order_flow(opts: &AppOptions) {
     // Calculate delivery tax
     let sp = ui::Spinner::new("Calculando frete...");
     let delivery_fee = match api::calculate_delivery_tax(
-        &ctx, &street, &number, &neighborhood, &city, &state, &zip_code,
+        &ctx,
+        &street,
+        &number,
+        &neighborhood,
+        &city,
+        &state,
+        &zip_code,
     )
     .await
     {
         Ok(fee) => {
             sp.stop();
-            println!(
-                "🚚 Taxa de entrega: {}",
-                format!("R$ {:.2}", fee).yellow()
-            );
+            println!("🚚 Taxa de entrega: {}", format!("R$ {:.2}", fee).yellow());
             fee
         }
         Err(e) => {
@@ -163,9 +162,7 @@ pub async fn start_order_flow(opts: &AppOptions) {
     ui::read_input("Pressione ENTER para confirmar o pedido...");
     println!(
         "{}",
-        "🚀 Enviando pedido... Aguarde a pizza! 🍕"
-            .green()
-            .bold()
+        "🚀 Enviando pedido... Aguarde a pizza! 🍕".green().bold()
     );
 }
 
@@ -192,13 +189,19 @@ fn gather_customer_info(user_config: &Option<UserConfig>) -> (String, String) {
 async fn select_delivery_address(
     user_config: &Option<UserConfig>,
     opts: &AppOptions,
-) -> (String, String, String, String, String, String, String, String) {
+) -> (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+) {
     if let Some(config) = user_config {
         if !config.addresses.is_empty() {
-            println!(
-                "\n{}",
-                "📍 Endereço de entrega:".yellow().bold()
-            );
+            println!("\n{}", "📍 Endereço de entrega:".yellow().bold());
             for (i, addr) in config.addresses.iter().enumerate() {
                 let default_marker = if config.endereco_padrao == Some(i) {
                     " ★"
@@ -216,10 +219,7 @@ async fn select_delivery_address(
                     addr.city
                 );
             }
-            println!(
-                "  [{}] Novo endereço",
-                config.addresses.len() + 1
-            );
+            println!("  [{}] Novo endereço", config.addresses.len() + 1);
 
             let choice = ui::read_input("Escolha: ");
             if let Ok(idx) = choice.parse::<usize>() {
@@ -246,7 +246,16 @@ async fn select_delivery_address(
 
 async fn collect_new_address(
     opts: &AppOptions,
-) -> (String, String, String, String, String, String, String, String) {
+) -> (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+) {
     let cep = ui::read_input("Digite o CEP: ");
 
     let sp = ui::Spinner::new("Buscando CEP...");
@@ -334,20 +343,23 @@ async fn ensure_client_id(
         return;
     }
 
-    // Skip if already have client_id
+    // Skip if already have client_id for the same name+phone
     if let Some(cfg) = user_config {
-        if cfg.client_id.is_some() {
+        if cfg.client_id.is_some() && cfg.name == name && cfg.phone == phone {
             return;
         }
     }
 
     let sp = ui::Spinner::new("Registrando cliente...");
     match api::register_client(ctx, name, phone).await {
-        Ok(client_id) => {
+        Ok(result) => {
             sp.stop();
             if !opts.stateless {
                 let mut cfg = user_config.clone().unwrap_or_default();
-                cfg.client_id = Some(client_id);
+                cfg.client_id = Some(result.client_id);
+                if result.token.is_some() {
+                    cfg.auth_token = result.token;
+                }
                 if cfg.name.is_empty() {
                     cfg.name = name.to_string();
                 }
@@ -357,18 +369,19 @@ async fn ensure_client_id(
                 config::save_user_config(&cfg, opts);
             }
         }
-        Err(_) => {
+        Err(e) => {
             drop(sp);
+            eprintln!(
+                "{}",
+                format!("Aviso: não foi possível obter o ID do cliente: {}", e).yellow()
+            );
         }
     }
 }
 
 fn list_rewards() {
     let rewards = config::get_loyalty_rewards();
-    println!(
-        "\n{}",
-        "🏆 --- PROGRAMA DE FIDELIDADE ---".yellow().bold()
-    );
+    println!("\n{}", "🏆 --- PROGRAMA DE FIDELIDADE ---".yellow().bold());
 
     for r in rewards {
         if r.active {

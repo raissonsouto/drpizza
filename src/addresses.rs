@@ -14,8 +14,7 @@ pub async fn manage_addresses(
     if opts.stateless {
         println!(
             "{}",
-            "Modo anônimo ativo. Gerenciamento de endereços indisponível."
-                .yellow()
+            "Modo anônimo ativo. Gerenciamento de endereços indisponível.".yellow()
         );
         return;
     }
@@ -128,10 +127,7 @@ async fn add_address(config: &mut UserConfig, opts: &AppOptions) {
             sp.stop();
             println!("  Rua:    {}", cep_data.logradouro.green());
             println!("  Bairro: {}", cep_data.bairro.green());
-            println!(
-                "  Cidade: {}/{}",
-                cep_data.localidade, cep_data.uf
-            );
+            println!("  Cidade: {}/{}", cep_data.localidade, cep_data.uf);
             (
                 cep_data.logradouro,
                 cep_data.bairro,
@@ -210,10 +206,7 @@ async fn edit_address(config: &mut UserConfig, opts: &AppOptions) {
                 sp.stop();
                 println!("  Rua:    {}", cep_data.logradouro.green());
                 println!("  Bairro: {}", cep_data.bairro.green());
-                println!(
-                    "  Cidade: {}/{}",
-                    cep_data.localidade, cep_data.uf
-                );
+                println!("  Cidade: {}/{}", cep_data.localidade, cep_data.uf);
                 (
                     cep_data.logradouro,
                     cep_data.bairro,
@@ -368,9 +361,7 @@ fn do_set_default_address(config: &mut UserConfig, opts: &AppOptions, idx: usize
         "Bairro do endereço padrão: {}",
         config.addresses[idx].neighborhood.bold()
     );
-    println!(
-        "A unidade será sugerida automaticamente com base neste bairro ao fazer pedidos."
-    );
+    println!("A unidade será sugerida automaticamente com base neste bairro ao fazer pedidos.");
 
     config::save_user_config(config, opts);
     println!(

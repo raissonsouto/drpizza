@@ -87,23 +87,17 @@ pub fn translate_status(status: &str) -> &str {
         "waiting_confirmation" => "Aguardando confirmação",
         "confirmed" => "Confirmado",
         "released" => "Saiu para entrega",
-        "concluded" => "Concluído",
+        "concluded" | "closed" => "Concluído",
         "cancelled" => "Cancelado",
         _ => status,
     }
 }
 
 pub fn today_weekday() -> String {
-    chrono::Local::now()
-        .format("%A")
-        .to_string()
-        .to_lowercase()
+    chrono::Local::now().format("%A").to_string().to_lowercase()
 }
 
-pub fn get_day_hours<'a>(
-    bh: &'a BusinessHours,
-    day: &str,
-) -> Option<&'a Vec<Vec<String>>> {
+pub fn get_day_hours<'a>(bh: &'a BusinessHours, day: &str) -> Option<&'a Vec<Vec<String>>> {
     match day {
         d if d.starts_with("sun") || d.starts_with("dom") => bh.sunday.as_ref(),
         d if d.starts_with("mon") || d.starts_with("seg") => bh.monday.as_ref(),
@@ -126,18 +120,8 @@ pub fn format_phone(raw: &str) -> String {
         &digits
     };
     match digits.len() {
-        11 => format!(
-            "({}) {}-{}",
-            &digits[0..2],
-            &digits[2..7],
-            &digits[7..11]
-        ),
-        10 => format!(
-            "({}) {}-{}",
-            &digits[0..2],
-            &digits[2..6],
-            &digits[6..10]
-        ),
+        11 => format!("({}) {}-{}", &digits[0..2], &digits[2..7], &digits[7..11]),
+        10 => format!("({}) {}-{}", &digits[0..2], &digits[2..6], &digits[6..10]),
         _ => raw.to_string(),
     }
 }

@@ -112,9 +112,8 @@ fn maybe_save_default_unit(selected: &Unit, user_config: &Option<UserConfig>, op
         }
     }
 
-    let choice = ui::read_input(
-        "Salvar como unidade padrão? (S)im / (N)ão / (P) Não perguntar novamente: ",
-    );
+    let choice =
+        ui::read_input("Salvar como unidade padrão? (S)im / (N)ão / (P) Não perguntar novamente: ");
     match choice.to_uppercase().chars().next() {
         Some('S') => {
             let mut cfg = user_config.clone().unwrap_or_default();
@@ -199,7 +198,10 @@ pub async fn list_units(
 ) {
     let sp = ui::Spinner::new("Carregando unidades...");
     let units = match api::fetch_units().await {
-        Ok(u) => { sp.stop(); u }
+        Ok(u) => {
+            sp.stop();
+            u
+        }
         Err(e) => {
             drop(sp);
             eprintln!("Erro ao buscar unidades: {}", e);
@@ -299,12 +301,7 @@ fn print_compact_list(units: &[&Unit], default_neighborhood: Option<&str>) {
             String::new()
         };
 
-        println!(
-            "\n[{}] {}{}",
-            u.id.to_string().cyan(),
-            u.name.bold(),
-            star,
-        );
+        println!("\n[{}] {}{}", u.id.to_string().cyan(), u.name.bold(), star,);
         println!("    └─ {}", u.formatted_address().italic());
 
         // Today's hours
@@ -371,12 +368,7 @@ fn print_unit_compact(u: &Unit, default_neighborhood: Option<&str>) {
         String::new()
     };
 
-    println!(
-        "\n[{}] {}{}",
-        u.id.to_string().cyan(),
-        u.name.bold(),
-        star,
-    );
+    println!("\n[{}] {}{}", u.id.to_string().cyan(), u.name.bold(), star,);
     println!("    └─ {}", u.formatted_address().italic());
 
     if let Some(bh) = &u.business_hours {
@@ -463,10 +455,7 @@ fn print_unit_details(u: &Unit, default_neighborhood: Option<&str>) {
     // Minimum order (prep time moved to modalities)
     if let Some(min_val) = u.minimum_order_value {
         if min_val > 0.0 {
-            println!(
-                "      Pedido mín: {}",
-                format!("R$ {:.2}", min_val).green()
-            );
+            println!("      Pedido mín: {}", format!("R$ {:.2}", min_val).green());
         }
     }
 

@@ -114,10 +114,16 @@ async fn main() {
     };
 
     match cli.command {
-        Some(Commands::Pedir { stateless, no_cache }) => {
+        Some(Commands::Pedir {
+            stateless,
+            no_cache,
+        }) => {
             order::start_order_flow(&base_opts(stateless, no_cache)).await;
         }
-        Some(Commands::Menu { no_pagination, no_cache }) => {
+        Some(Commands::Menu {
+            no_pagination,
+            no_cache,
+        }) => {
             menu::list_menu(&base_opts(false, no_cache), no_pagination).await;
         }
         Some(Commands::Unidades {

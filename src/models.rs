@@ -88,7 +88,10 @@ impl Unit {
         let neighbor = self.neighborhood.as_deref().unwrap_or("");
         let city = self.city.as_deref().unwrap_or("");
         let state = self.state.as_deref().unwrap_or("");
-        format!("{}, {} - {}, {} - {}", street, number, neighbor, city, state)
+        format!(
+            "{}, {} - {}, {} - {}",
+            street, number, neighbor, city, state
+        )
     }
 }
 
@@ -288,6 +291,8 @@ pub struct UserConfig {
     #[serde(default)]
     pub phone: String,
     pub client_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
     #[serde(default)]
     pub addresses: Vec<SavedAddress>,
     #[serde(default)]

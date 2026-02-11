@@ -1,6 +1,4 @@
-use crate::models::{
-    CepResponse, GroupResponse, MenuCategory, OrderDetail, PendingOrder, Unit,
-};
+use crate::models::{CepResponse, GroupResponse, MenuCategory, OrderDetail, PendingOrder, Unit};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -24,7 +22,12 @@ impl ApiContext {
     pub fn from_unit(unit: &Unit) -> Self {
         let slug = unit.url_name.clone().unwrap_or_default();
         let session_id = generate_session_id();
-        dev_log!("ApiContext: company_id={}, slug={}, session={}", unit.id, slug, session_id);
+        dev_log!(
+            "ApiContext: company_id={}, slug={}, session={}",
+            unit.id,
+            slug,
+            session_id
+        );
         ApiContext {
             company_id: unit.id,
             company_slug: slug,
@@ -64,7 +67,12 @@ pub async fn fetch_units() -> Result<Vec<Unit>, Box<dyn Error>> {
 pub async fn fetch_menu(ctx: &ApiContext) -> Result<Vec<MenuCategory>, Box<dyn Error>> {
     let url = "https://integracao.cardapioweb.com/api/menu/company/categories?only_available_for=delivery&origin=catalogo";
     dev_log!("GET {}", url);
-    dev_log!("Headers: company-id={}, company={}, sessionid={}", ctx.company_id, ctx.company_slug, ctx.session_id);
+    dev_log!(
+        "Headers: company-id={}, company={}, sessionid={}",
+        ctx.company_id,
+        ctx.company_slug,
+        ctx.session_id
+    );
 
     let client = reqwest::Client::new();
     let res = client
@@ -79,7 +87,11 @@ pub async fn fetch_menu(ctx: &ApiContext) -> Result<Vec<MenuCategory>, Box<dyn E
     let body_text = res.text().await?;
 
     dev_log!("Status: {}", status);
-    dev_log!("Body ({} bytes): {}", body_text.len(), &body_text[..body_text.len().min(500)]);
+    dev_log!(
+        "Body ({} bytes): {}",
+        body_text.len(),
+        &body_text[..body_text.len().min(500)]
+    );
 
     if !status.is_success() {
         return Err(format!("Erro na API do cardápio: {}", status).into());
@@ -93,11 +105,16 @@ pub async fn fetch_menu(ctx: &ApiContext) -> Result<Vec<MenuCategory>, Box<dyn E
 
 // --- Client Registration ---
 
+pub struct ClientResult {
+    pub client_id: u64,
+    pub token: Option<String>,
+}
+
 pub async fn register_client(
     ctx: &ApiContext,
     name: &str,
     phone: &str,
-) -> Result<u64, Box<dyn Error>> {
+) -> Result<ClientResult, Box<dyn Error>> {
     let url = "https://integracao.cardapioweb.com/api/menu/company/clients";
     let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
     dev_log!("POST {} name={} phone={}", url, name, digits);
@@ -125,17 +142,82 @@ pub async fn register_client(
     if !status.is_success() {
         let error_text = res.text().await?;
         dev_log!("Erro body: {}", error_text);
+
+        // Phone already registered — look up existing client
+        if error_text.contains("cadastrado") {
+            return lookup_client_by_phone(ctx, phone).await;
+        }
+
         return Err(format!("Erro na API de clientes: {}", error_text).into());
     }
 
     let json_response: serde_json::Value = res.json().await?;
     dev_log!("Response: {}", json_response);
 
-    let client_id = json_response["client"]["id"]
-        .as_u64()
-        .ok_or("Não foi possível extrair o ID do cliente")?;
+    let client_id = extract_client_id(&json_response)?;
+    let token = extract_token(&json_response);
+    Ok(ClientResult { client_id, token })
+}
 
-    Ok(client_id)
+async fn lookup_client_by_phone(
+    ctx: &ApiContext,
+    phone: &str,
+) -> Result<ClientResult, Box<dyn Error>> {
+    let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+    let url = format!(
+        "https://integracao.cardapioweb.com/api/menu/company/clients?telephone={}",
+        digits
+    );
+    dev_log!("GET {} (lookup by phone)", url);
+
+    let client = reqwest::Client::new();
+    let res = client
+        .get(&url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("company-id", ctx.company_id.to_string())
+        .header("company", &ctx.company_slug)
+        .header("sessionid", &ctx.session_id)
+        .send()
+        .await?;
+
+    let status = res.status();
+    dev_log!("Status: {}", status);
+
+    if !status.is_success() {
+        let error_text = res.text().await?;
+        dev_log!("Erro body: {}", error_text);
+        return Err(format!("Erro ao buscar cliente: {}", error_text).into());
+    }
+
+    let json_response: serde_json::Value = res.json().await?;
+    dev_log!("Response: {}", json_response);
+
+    let client_id = extract_client_id(&json_response)?;
+    let token = extract_token(&json_response);
+    Ok(ClientResult { client_id, token })
+}
+
+fn extract_client_id(json: &serde_json::Value) -> Result<u64, Box<dyn Error>> {
+    json["client"]["id"]
+        .as_u64()
+        .or_else(|| json["client"]["id"].as_str().and_then(|s| s.parse().ok()))
+        .or_else(|| json["id"].as_u64())
+        .or_else(|| json["id"].as_str().and_then(|s| s.parse().ok()))
+        .or_else(|| {
+            json.as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|c| c["id"].as_u64())
+        })
+        .ok_or_else(|| "Não foi possível extrair o ID do cliente".into())
+}
+
+fn extract_token(json: &serde_json::Value) -> Option<String> {
+    json["token"]
+        .as_str()
+        .or_else(|| json["auth_token"].as_str())
+        .or_else(|| json["authorization"].as_str())
+        .or_else(|| json["client"]["token"].as_str())
+        .map(|s| s.to_string())
 }
 
 // --- CEP Lookup ---
@@ -188,7 +270,10 @@ pub async fn calculate_delivery_tax(
     zip_code: &str,
 ) -> Result<f64, Box<dyn Error>> {
     let url = "https://integracao.cardapioweb.com/api/menu/company/orders/calculate_tax";
-    let full_address = format!("{}, {}, {}, {}, {}", street, number, neighborhood, city, state);
+    let full_address = format!(
+        "{}, {}, {}, {}, {}",
+        street, number, neighborhood, city, state
+    );
     dev_log!("POST {}", url);
     dev_log!("Endereço: {}", full_address);
 
@@ -276,6 +361,48 @@ pub async fn fetch_pending_orders(
 
     let orders: Vec<PendingOrder> = res.json().await?;
     dev_log!("Pedidos recebidos: {}", orders.len());
+    Ok(orders)
+}
+
+// --- Closed Orders ---
+
+pub async fn fetch_closed_orders(
+    ctx: &ApiContext,
+    client_id: u64,
+    limit: u32,
+    auth_token: Option<&str>,
+) -> Result<Vec<PendingOrder>, Box<dyn Error>> {
+    let url = format!(
+        "https://integracao.cardapioweb.com/api/menu/company/client/{}/closed_orders?limit={}",
+        client_id, limit
+    );
+    dev_log!("GET {}", url);
+
+    let client = reqwest::Client::new();
+    let mut req = client
+        .get(&url)
+        .header("accept", "application/json, text/plain, */*")
+        .header("company-id", ctx.company_id.to_string())
+        .header("company", &ctx.company_slug)
+        .header("sessionid", &ctx.session_id);
+
+    if let Some(token) = auth_token {
+        req = req.header("authorization", token);
+    }
+
+    let res = req.send().await?;
+
+    let status = res.status();
+    dev_log!("Status: {}", status);
+
+    if !status.is_success() {
+        let error_text = res.text().await?;
+        dev_log!("Erro body: {}", error_text);
+        return Err(format!("Erro na API: {}", error_text).into());
+    }
+
+    let orders: Vec<PendingOrder> = res.json().await?;
+    dev_log!("Pedidos fechados recebidos: {}", orders.len());
     Ok(orders)
 }
 
