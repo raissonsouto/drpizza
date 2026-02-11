@@ -1,9 +1,13 @@
 [package]
 name = "drpizza"
+description = "CLI para pedir pizza da Dr. Pizza direto do terminal"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
+authors = ["Raisson Souto"]
 
 [features]
+# Ativa dev_log! em api.rs: cargo run --features dev -- <args>
 dev = []
 
 [dependencies]
