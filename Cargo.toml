@@ -3,8 +3,16 @@ name = "drpizza"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+dev = []
+
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.4", features = ["derive"] }
 colored = "2.0"
+dirs = "5"
+rand = "0.8"
+reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }

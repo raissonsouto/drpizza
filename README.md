@@ -3,7 +3,9 @@
 
 > **"Aqui é RECHEIO com PIZZA!"**
 
-Chega de ligar ou mandar mensagem. Com essa CLI, você faz seu pedido diretamente no sistema do Dr. Pizza, escolhe se quer **Receber em Casa (Delivery)** ou **Buscar na Loja (Retirada)** e acompanha seus pontos de fidelidade em tempo real. Rápido, direto e sem enrolação.
+CLI para fazer pedidos no Dr. Pizza diretamente pelo terminal. Escolha entre **Delivery** ou **Retirada**, consulte o cardápio atualizado e acompanhe seus pedidos.
+
+## Instalação
 
 ```bash
 curl -L -o drpizza https://github.com/raissonsouto/drpizza-cli/releases/latest/download/drpizza_linux_amd64 && chmod +x drpizza && sudo mv drpizza /usr/local/bin/
@@ -11,35 +13,50 @@ curl -L -o drpizza https://github.com/raissonsouto/drpizza-cli/releases/latest/d
 
 Agora, basta digitar `drpizza` em qualquer lugar do terminal para pedir sua pizza!
 
-## Funcionalidades
+## Comandos
 
-O sistema conecta você diretamente às unidades das Malvinas, Cruzeiro e Alto Branco.
+| Comando | Descrição |
+|---------|-----------|
+| `drpizza pedir` | Inicia o assistente de pedido interativo (padrão) |
+| `drpizza menu` | Exibe o cardápio completo com preços |
+| `drpizza unidades` | Lista unidades disponíveis |
+| `drpizza pedido` | Mostra status do último pedido |
+| `drpizza pedidos` | Lista histórico de pedidos |
+| `drpizza perfil` | Visualiza o perfil local (nome, telefone) |
+| `drpizza perfil --edit` | Edita o perfil interativamente |
+| `drpizza enderecos` | Gerencia endereços de entrega |
 
-* **Pedido Real**: Monte seu carrinho, escolha bordas e envie o pedido para a cozinha.
-* **Delivery ou Retirada**: Defina se o motoboy leva até você ou se você passa para pegar.
-* **Cardápio Atualizado**: Acesso instantâneo aos preços, promoções e novos sabores.
-* **Programa de Fidelidade**: Consulte seu saldo de pontos e troque por recompensas (Refrigerantes, Descontos) direto pelo terminal.
-* **Multi-Lojas**: Selecione a unidade da Dr. Pizza mais próxima da sua casa.
+## Flags Globais
 
-## Contribua (Rodar Localmente)
+| Flag | Descrição |
+|------|-----------|
+| `-u <ID>`, `--unidade <ID>` | Define a unidade antecipadamente |
+| `-s`, `--stateless` | Modo anônimo: ignora dados salvos em `~/.drpizza` |
+| `--no-cache` | Ignora cache e força busca atualizada do cardápio |
 
-Se você quer contribuir com o código ou rodar a versão de desenvolvimento na sua máquina:
+## Flags de Comando
 
-### 1. Baixe o repositório
+| Flag | Comando | Descrição |
+|------|---------|-----------|
+| `--no-pagination` | `menu` | Exibe o cardápio completo sem paginação |
+| `--edit` | `perfil` | Edita o perfil interativamente |
 
-```bash
-git clone https://github.com/raissonsouto/drpizza-cli.git
-cd drpizza-cli
-```
+## Modo Anônimo (`--stateless`)
 
-### 2. Compile e Rode
+Quando ativado com `-s` ou `--stateless`, o sistema opera de forma completamente stateless:
 
-Se você tiver o `make` configurado (opcional) ou usando o Cargo diretamente:
+- Nenhum arquivo é lido ou gravado em `~/.drpizza`
+- Todo o fluxo é executado como se fosse a primeira execução
+- Dados necessários (nome, telefone, endereço) são solicitados durante o pedido
+- Ideal para uso em máquinas compartilhadas ou testes
 
-```bash
-# Compilar versão de produção
-cargo build --release
+## Perfil e Endereços
 
-# Rodar diretamente
-cargo run
-```
+O perfil local é armazenado em `~/.drpizza` e inclui:
+
+- **Nome** e **telefone** do cliente (gerenciados via `drpizza perfil`)
+- **Client ID** para consulta de pedidos
+- **Endereços** de entrega salvos (gerenciados via `drpizza enderecos`)
+- **Unidade padrão** e **endereço padrão**
+
+O endereço padrão é usado para sugerir automaticamente a unidade mais adequada com base no bairro.
