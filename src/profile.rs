@@ -43,6 +43,14 @@ fn display_profile(opts: &AppOptions) {
             if let Some(cid) = config.client_id {
                 println!("  Client ID: {}", cid);
             }
+            println!(
+                "  Auth senha: {}",
+                if config.auth_password.is_some() {
+                    "configurada".green().to_string()
+                } else {
+                    "não definida".yellow().to_string()
+                }
+            );
 
             if !config.addresses.is_empty() {
                 println!(
@@ -125,6 +133,19 @@ async fn edit_profile(opts: &AppOptions) {
     ));
     if !phone.is_empty() {
         config.phone = phone;
+    }
+
+    let password_hint = if config.auth_password.is_some() {
+        "configurada"
+    } else {
+        "vazia"
+    };
+    let auth_password = ui::read_input(&format!(
+        "Senha auth CardapioWeb [{}] (ENTER mantém): ",
+        password_hint
+    ));
+    if !auth_password.is_empty() {
+        config.auth_password = Some(auth_password);
     }
 
     config::save_user_config(&config, opts);

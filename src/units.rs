@@ -10,19 +10,28 @@ const DEFAULT_UNIT_ID: u32 = 7842;
 
 pub async fn select_unit_and_context(opts: &AppOptions) -> (Unit, ApiContext) {
     let sp = ui::Spinner::new("Carregando unidades...");
-    let units = api::fetch_units()
-        .await
-        .expect("Falha ao carregar unidades");
-    sp.stop();
+    let units = match api::fetch_units().await {
+        Ok(u) => {
+            sp.stop();
+            u
+        }
+        Err(e) => {
+            drop(sp);
+            eprintln!("Falha ao carregar unidades: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let user_config = config::load_user_config(opts);
 
-    let selected_unit = if let Some(uid) = opts.unit_id {
-        units
-            .iter()
-            .find(|u| u.id == uid)
-            .cloned()
-            .expect("Unidade não encontrada")
+    let selected_unit = if let Some(list_id) = opts.unit_id {
+        match units.get(list_id) {
+            Some(u) => u.clone(),
+            None => {
+                println!("{}", format!("ID de unidade inválido: {}.", list_id).red());
+                pick_unit_interactively(&units)
+            }
+        }
     } else {
         let default_id = determine_default_unit_id(&user_config, &units);
         select_with_default(&units, default_id)
@@ -71,20 +80,32 @@ fn determine_default_unit_id(user_config: &Option<UserConfig>, units: &[Unit]) -
 
 fn select_with_default(units: &[Unit], default_id: u32) -> Unit {
     if let Some(default_unit) = units.iter().find(|u| u.id == default_id) {
+        let default_list_id = units
+            .iter()
+            .position(|u| u.id == default_unit.id)
+            .unwrap_or(0);
         loop {
             let input = ui::read_input(&format!(
-                "Unidade: {} [{}] (ENTER p/ confirmar ou digite o ID): ",
+                "Unidade: {} [{}] (ENTER confirma / L listar unidades / digite id da unidade): ",
                 default_unit.name.bold(),
-                default_unit.id.to_string().cyan()
+                default_list_id.to_string().cyan()
             ));
+            let normalized = input.trim().to_uppercase();
+
             if input.is_empty() {
                 return default_unit.clone();
             }
-            if let Ok(id) = input.parse::<u32>() {
-                if let Some(u) = units.iter().find(|u| u.id == id) {
+
+            if normalized == "L" {
+                print_units_indexed_list(units);
+                continue;
+            }
+
+            if let Ok(list_id) = input.parse::<usize>() {
+                if let Some(u) = units.get(list_id) {
                     return u.clone();
                 }
-                println!("{}", "Unidade não encontrada.".red());
+                println!("{}", "ID de unidade inválido.".red());
             } else {
                 println!("{}", "Entrada inválida.".red());
             }
@@ -136,14 +157,34 @@ fn maybe_save_default_unit(selected: &Unit, user_config: &Option<UserConfig>, op
 
 fn pick_unit_interactively(units: &[Unit]) -> Unit {
     loop {
-        print_units_list(units);
-        if let Some(choice) = ui::read_int("Digite o número da unidade: ") {
-            if let Some(u) = units.iter().find(|u| u.id == choice) {
+        print_units_indexed_list(units);
+        if let Some(choice) = ui::read_int("Digite o id da unidade: ") {
+            if let Some(u) = units.get(choice as usize) {
                 return u.clone();
             }
         }
         println!("{}", "Opção inválida.".red());
     }
+}
+
+fn print_units_indexed_list(units: &[Unit]) {
+    println!("\n{}", "📍 --- UNIDADES DISPONÍVEIS ---".red().bold());
+    for (list_id, u) in units.iter().enumerate() {
+        println!(
+            "[{}] {} {}",
+            list_id.to_string().cyan(),
+            u.name.bold(),
+            format!("(ID {})", u.id).bright_black()
+        );
+        println!(
+            "    └─ {}",
+            u.street
+                .as_deref()
+                .unwrap_or("Endereço não disponível")
+                .italic()
+        );
+    }
+    println!();
 }
 
 fn get_default_neighborhood(cfg: &UserConfig) -> Option<String> {
@@ -171,29 +212,38 @@ fn unit_serves_neighborhood(u: &Unit, neighborhood: &str) -> bool {
         .any(|n| n.name.to_lowercase() == needle)
 }
 
-// --- List Units ---
+fn modality_labels(u: &Unit) -> Vec<String> {
+    let Some(flags) = &u.flags else {
+        return Vec::new();
+    };
 
-fn print_units_list(units: &[Unit]) {
-    println!("\n{}", "📍 --- UNIDADES DISPONÍVEIS ---".red().bold());
-    for u in units {
-        println!(
-            "[{}] {}\n    └─ {}",
-            u.id.to_string().cyan(),
-            u.name.bold(),
-            u.street
-                .as_deref()
-                .unwrap_or("Endereço não disponível")
-                .italic()
-        );
+    if flags.work_with_delivery && u.delivery_only_for_neighborhoods.is_empty() {
+        return vec!["Apenas retirada presencial".to_string()];
     }
-    println!();
+
+    let mut modes = Vec::new();
+    if flags.work_with_delivery {
+        match u.preparation_time {
+            Some(t) => modes.push(format!("Delivery (~{}min)", t)),
+            None => modes.push("Delivery".to_string()),
+        }
+    }
+    if flags.work_with_pick_up_store {
+        modes.push("Retirada".to_string());
+    }
+    if flags.work_with_onsite {
+        modes.push("No local".to_string());
+    }
+    modes
 }
+
+// --- List Units ---
 
 pub async fn list_units(
     opts: &AppOptions,
     all: bool,
     detalhes: bool,
-    set_default: Option<u32>,
+    set_default: Option<usize>,
     no_default: bool,
 ) {
     let sp = ui::Spinner::new("Carregando unidades...");
@@ -221,49 +271,50 @@ pub async fn list_units(
     }
 
     // Handle -d <id>: set default unit for current address
-    if let Some(unit_id) = set_default {
-        handle_set_default_unit(unit_id, &units, &user_config, opts);
+    if let Some(list_id) = set_default {
+        handle_set_default_unit(list_id, &units, &user_config, opts);
         return;
     }
 
     // If -u was passed
-    if let Some(uid) = opts.unit_id {
-        match units.iter().find(|u| u.id == uid) {
+    if let Some(list_id) = opts.unit_id {
+        match units.get(list_id) {
             Some(u) => {
                 if detalhes {
-                    print_unit_details(u, default_neighborhood.as_deref());
+                    print_unit_details(u, list_id, default_neighborhood.as_deref());
                 } else {
-                    print_unit_compact(u, default_neighborhood.as_deref());
+                    print_unit_compact(u, list_id, default_neighborhood.as_deref());
                 }
             }
-            None => println!("{}", "Unidade não encontrada.".red()),
+            None => println!("{}", "ID de unidade inválido.".red()),
         }
         return;
     }
 
     // Filter units by neighborhood (unless -a or no neighborhood)
-    let filtered_units: Vec<&Unit> = if !all {
+    let filtered_units: Vec<(usize, &Unit)> = if !all {
         if let Some(ref dn) = default_neighborhood {
-            let filtered: Vec<&Unit> = units
+            let filtered: Vec<(usize, &Unit)> = units
                 .iter()
-                .filter(|u| unit_serves_neighborhood(u, dn))
+                .enumerate()
+                .filter(|(_, u)| unit_serves_neighborhood(u, dn))
                 .collect();
             if filtered.is_empty() {
-                units.iter().collect()
+                units.iter().enumerate().collect()
             } else {
                 filtered
             }
         } else {
-            units.iter().collect()
+            units.iter().enumerate().collect()
         }
     } else {
-        units.iter().collect()
+        units.iter().enumerate().collect()
     };
 
     if detalhes {
         // Detailed view for all filtered units
-        for u in &filtered_units {
-            print_unit_details(u, default_neighborhood.as_deref());
+        for (list_id, u) in &filtered_units {
+            print_unit_details(u, *list_id, default_neighborhood.as_deref());
         }
     } else {
         // Compact listing
@@ -286,11 +337,11 @@ pub async fn list_units(
     println!();
 }
 
-fn print_compact_list(units: &[&Unit], default_neighborhood: Option<&str>) {
+fn print_compact_list(units: &[(usize, &Unit)], default_neighborhood: Option<&str>) {
     let today = ui::today_weekday();
     println!("\n{}", "📍 --- UNIDADES DISPONÍVEIS ---".red().bold());
 
-    for u in units {
+    for (list_id, u) in units {
         let star = if let Some(dn) = default_neighborhood {
             if unit_serves_neighborhood(u, dn) {
                 format!(" {}", "★".yellow())
@@ -301,7 +352,12 @@ fn print_compact_list(units: &[&Unit], default_neighborhood: Option<&str>) {
             String::new()
         };
 
-        println!("\n[{}] {}{}", u.id.to_string().cyan(), u.name.bold(), star,);
+        println!(
+            "\n[{}] {}{}",
+            list_id.to_string().cyan(),
+            u.name.bold(),
+            star,
+        );
         println!("    └─ {}", u.formatted_address().italic());
 
         // Today's hours
@@ -327,23 +383,9 @@ fn print_compact_list(units: &[&Unit], default_neighborhood: Option<&str>) {
         }
 
         // Modalities
-        if let Some(flags) = &u.flags {
-            let mut modos: Vec<String> = Vec::new();
-            if flags.work_with_delivery {
-                match u.preparation_time {
-                    Some(t) => modos.push(format!("Delivery (~{}min)", t)),
-                    None => modos.push("Delivery".to_string()),
-                }
-            }
-            if flags.work_with_pick_up_store {
-                modos.push("Retirada".to_string());
-            }
-            if flags.work_with_onsite {
-                modos.push("No local".to_string());
-            }
-            if !modos.is_empty() {
-                println!("    📦 {}", modos.join(", ").green());
-            }
+        let modos = modality_labels(u);
+        if !modos.is_empty() {
+            println!("    📦 {}", modos.join(", ").green());
         }
 
         // WhatsApp
@@ -355,7 +397,7 @@ fn print_compact_list(units: &[&Unit], default_neighborhood: Option<&str>) {
     }
 }
 
-fn print_unit_compact(u: &Unit, default_neighborhood: Option<&str>) {
+fn print_unit_compact(u: &Unit, list_id: usize, default_neighborhood: Option<&str>) {
     let today = ui::today_weekday();
 
     let star = if let Some(dn) = default_neighborhood {
@@ -368,7 +410,12 @@ fn print_unit_compact(u: &Unit, default_neighborhood: Option<&str>) {
         String::new()
     };
 
-    println!("\n[{}] {}{}", u.id.to_string().cyan(), u.name.bold(), star,);
+    println!(
+        "\n[{}] {}{}",
+        list_id.to_string().cyan(),
+        u.name.bold(),
+        star,
+    );
     println!("    └─ {}", u.formatted_address().italic());
 
     if let Some(bh) = &u.business_hours {
@@ -392,23 +439,9 @@ fn print_unit_compact(u: &Unit, default_neighborhood: Option<&str>) {
         }
     }
 
-    if let Some(flags) = &u.flags {
-        let mut modos: Vec<String> = Vec::new();
-        if flags.work_with_delivery {
-            match u.preparation_time {
-                Some(t) => modos.push(format!("Delivery (~{}min)", t)),
-                None => modos.push("Delivery".to_string()),
-            }
-        }
-        if flags.work_with_pick_up_store {
-            modos.push("Retirada".to_string());
-        }
-        if flags.work_with_onsite {
-            modos.push("No local".to_string());
-        }
-        if !modos.is_empty() {
-            println!("    📦 {}", modos.join(", ").green());
-        }
+    let modos = modality_labels(u);
+    if !modos.is_empty() {
+        println!("    📦 {}", modos.join(", ").green());
     }
 
     if let Some(wpp) = &u.order_whatsapp {
@@ -420,8 +453,12 @@ fn print_unit_compact(u: &Unit, default_neighborhood: Option<&str>) {
     println!();
 }
 
-fn print_unit_details(u: &Unit, default_neighborhood: Option<&str>) {
-    println!("\n{}", format!("📍 {} [{}]", u.name, u.id).red().bold());
+fn print_unit_details(u: &Unit, list_id: usize, default_neighborhood: Option<&str>) {
+    println!("\n{}", format!("📍 {} [{}]", u.name, list_id).red().bold());
+    println!(
+        "    {}",
+        format!("ID interno da API: {}", u.id).bright_black()
+    );
     println!("    {}", u.formatted_address().italic());
 
     // Description
@@ -459,24 +496,10 @@ fn print_unit_details(u: &Unit, default_neighborhood: Option<&str>) {
         }
     }
 
-    // Modalities (with prep time on Delivery)
-    if let Some(flags) = &u.flags {
-        let mut modos: Vec<String> = Vec::new();
-        if flags.work_with_delivery {
-            match u.preparation_time {
-                Some(t) => modos.push(format!("Delivery (~{}min)", t)),
-                None => modos.push("Delivery".to_string()),
-            }
-        }
-        if flags.work_with_pick_up_store {
-            modos.push("Retirada".to_string());
-        }
-        if flags.work_with_onsite {
-            modos.push("No local".to_string());
-        }
-        if !modos.is_empty() {
-            println!("      Modalidades: {}", modos.join(", ").green());
-        }
+    // Modalities
+    let modos = modality_labels(u);
+    if !modos.is_empty() {
+        println!("      Modalidades: {}", modos.join(", ").green());
     }
 
     // Business hours
@@ -547,21 +570,27 @@ fn print_unit_details(u: &Unit, default_neighborhood: Option<&str>) {
                 );
             }
         }
+    } else {
+        println!(
+            "\n    {} {}",
+            "Bairros atendidos:".yellow(),
+            "não informado (apenas retirada presencial)".bright_black()
+        );
     }
 
     println!();
 }
 
 fn handle_set_default_unit(
-    unit_id: u32,
+    list_id: usize,
     units: &[Unit],
     user_config: &Option<UserConfig>,
     opts: &AppOptions,
 ) {
-    let unit = match units.iter().find(|u| u.id == unit_id) {
+    let unit = match units.get(list_id) {
         Some(u) => u,
         None => {
-            println!("{}", "Unidade não encontrada.".red());
+            println!("{}", "ID de unidade inválido.".red());
             return;
         }
     };
@@ -610,7 +639,7 @@ fn handle_set_default_unit(
         return;
     }
 
-    cfg.addresses[idx].unidade_padrao = Some(unit_id);
+    cfg.addresses[idx].unidade_padrao = Some(unit.id);
     config::save_user_config(&cfg, opts);
     println!(
         "{} definida como unidade padrão para {}!",

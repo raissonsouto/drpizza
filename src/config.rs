@@ -10,7 +10,7 @@ use std::path::PathBuf;
 pub struct AppOptions {
     pub stateless: bool,
     pub no_cache: bool,
-    pub unit_id: Option<u32>,
+    pub unit_id: Option<usize>,
 }
 
 // --- File Paths ---

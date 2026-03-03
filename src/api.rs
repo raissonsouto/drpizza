@@ -1,4 +1,7 @@
-use crate::models::{CepResponse, GroupResponse, MenuCategory, OrderDetail, PendingOrder, Unit};
+use crate::models::{
+    CepResponse, GroupResponse, MenuCategory, OrderDetail, OrderPayload, OrderResponse,
+    PendingOrder, Unit,
+};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -110,6 +113,17 @@ pub struct ClientResult {
     pub token: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct ClientSessionLoginPayload {
+    auth: ClientSessionAuthPayload,
+}
+
+#[derive(Debug, Serialize)]
+struct ClientSessionAuthPayload {
+    client_id: u64,
+    password: String,
+}
+
 pub async fn register_client(
     ctx: &ApiContext,
     name: &str,
@@ -214,10 +228,65 @@ fn extract_client_id(json: &serde_json::Value) -> Result<u64, Box<dyn Error>> {
 fn extract_token(json: &serde_json::Value) -> Option<String> {
     json["token"]
         .as_str()
+        .or_else(|| json["access_token"].as_str())
         .or_else(|| json["auth_token"].as_str())
         .or_else(|| json["authorization"].as_str())
         .or_else(|| json["client"]["token"].as_str())
+        .or_else(|| json["data"]["token"].as_str())
+        .or_else(|| json["data"]["access_token"].as_str())
+        .or_else(|| json["data"]["authorization"].as_str())
         .map(|s| s.to_string())
+}
+
+pub async fn login_client_session(
+    ctx: &ApiContext,
+    client_id: u64,
+    password: &str,
+) -> Result<String, Box<dyn Error>> {
+    let url = "https://integracao.cardapioweb.com/api/menu/authentication/client_session/login";
+    dev_log!(
+        "POST {} client_id={} company-id={} company={}",
+        url,
+        client_id,
+        ctx.company_id,
+        ctx.company_slug
+    );
+
+    let payload = ClientSessionLoginPayload {
+        auth: ClientSessionAuthPayload {
+            client_id,
+            password: password.to_string(),
+        },
+    };
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post(url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Content-Type", "application/json;charset=utf-8")
+        .header("company-id", ctx.company_id.to_string())
+        .header("company", &ctx.company_slug)
+        .header("sessionid", &ctx.session_id)
+        .json(&payload)
+        .send()
+        .await?;
+
+    let status = res.status();
+    let body_text = res.text().await?;
+    dev_log!("Status: {}", status);
+    dev_log!(
+        "Body ({} bytes): {}",
+        body_text.len(),
+        &body_text[..body_text.len().min(500)]
+    );
+
+    if !status.is_success() {
+        return Err(format!("Erro no login da sessão do cliente: {}", body_text).into());
+    }
+
+    let json_response: serde_json::Value = serde_json::from_str(&body_text)?;
+    extract_token(&json_response)
+        .ok_or_else(|| "Login realizado, mas não foi possível extrair token de autenticação".into())
 }
 
 // --- CEP Lookup ---
@@ -439,4 +508,61 @@ pub async fn fetch_order_detail(
 
     let detail: OrderDetail = res.json().await?;
     Ok(detail)
+}
+
+// --- Submit Order ---
+
+pub async fn submit_order(
+    ctx: &ApiContext,
+    payload: &OrderPayload,
+) -> Result<OrderResponse, Box<dyn Error>> {
+    let url = "https://integracao.cardapioweb.com/api/menu/company/orders";
+    dev_log!("POST {}", url);
+    dev_log!(
+        "Headers: company-id={}, company={}, sessionid={}",
+        ctx.company_id,
+        ctx.company_slug,
+        ctx.session_id
+    );
+    dev_log!(
+        "Payload: {}",
+        serde_json::to_string_pretty(payload).unwrap_or_default()
+    );
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post(url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("Content-Type", "application/json;charset=utf-8")
+        .header("company-id", ctx.company_id.to_string())
+        .header("company", &ctx.company_slug)
+        .header("sessionid", &ctx.session_id)
+        .json(payload)
+        .send()
+        .await?;
+
+    let status = res.status();
+    let body_text = res.text().await?;
+
+    dev_log!("Status: {}", status);
+    dev_log!(
+        "Body ({} bytes): {}",
+        body_text.len(),
+        &body_text[..body_text.len().min(500)]
+    );
+
+    if !status.is_success() {
+        return Err(format!("Erro ao enviar pedido: {} - {}", status, body_text).into());
+    }
+
+    let order: OrderResponse = serde_json::from_str(&body_text)?;
+    dev_log!(
+        "Pedido criado: id={}, uid={}, number={}, status={}",
+        order.id,
+        order.uid,
+        order.order_number,
+        order.status
+    );
+
+    Ok(order)
 }

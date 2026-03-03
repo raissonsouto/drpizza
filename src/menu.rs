@@ -3,6 +3,7 @@ use crate::models::{AddOnGroup, MenuCategory, MenuItem, MenuSelection, SubItem};
 use crate::ui;
 use crate::units;
 use colored::*;
+use std::cmp;
 
 pub async fn list_menu(opts: &AppOptions, no_pagination: bool) {
     let (_unit, ctx) = units::select_unit_and_context(opts).await;
@@ -47,7 +48,7 @@ fn print_full_menu(menu_data: &[MenuCategory]) {
 
             if let Some(desc) = &item.description {
                 if !desc.is_empty() {
-                    println!("      {}", desc.italic().truecolor(150, 150, 150));
+                    print_wrapped_desc(desc);
                 }
             }
 
@@ -151,7 +152,7 @@ fn show_category_items(category: &MenuCategory) {
 
         if let Some(desc) = &item.description {
             if !desc.is_empty() {
-                println!("      {}", desc.italic().truecolor(150, 150, 150));
+                print_wrapped_desc(desc);
             }
         }
 
@@ -177,7 +178,7 @@ fn select_category_item(category: &MenuCategory) -> Option<MenuSelection> {
 
         if let Some(desc) = &item.description {
             if !desc.is_empty() {
-                println!("      {}", desc.italic().truecolor(150, 150, 150));
+                print_wrapped_desc(desc);
             }
         }
 
@@ -220,7 +221,7 @@ fn print_item_addons(item: &MenuItem) {
                     println!(
                         "      {} {}",
                         "Sabores:".truecolor(180, 140, 80),
-                        names.join(", ").truecolor(150, 150, 150)
+                        preview_list(&names, 10).truecolor(150, 150, 150)
                     );
                 }
             }
@@ -240,7 +241,7 @@ fn print_item_addons(item: &MenuItem) {
                     println!(
                         "      {} {}",
                         "Bordas:".truecolor(180, 140, 80),
-                        crusts.join(", ").truecolor(150, 150, 150)
+                        preview_list(&crusts, 6).truecolor(150, 150, 150)
                     );
                 }
             }
@@ -364,4 +365,51 @@ fn parse_max_flavors(addon_name: &str) -> usize {
         }
     }
     1
+}
+
+fn print_wrapped_desc(text: &str) {
+    for line in wrap_text(text, 90) {
+        println!("      {}", line.italic().truecolor(150, 150, 150));
+    }
+}
+
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw_line in text.lines() {
+        let words: Vec<&str> = raw_line.split_whitespace().collect();
+        if words.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in words {
+            if current.is_empty() {
+                current.push_str(word);
+                continue;
+            }
+            if current.len() + 1 + word.len() <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                out.push(current);
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() {
+            out.push(current);
+        }
+    }
+    out
+}
+
+fn preview_list<T: AsRef<str>>(items: &[T], max_items: usize) -> String {
+    let take_n = cmp::min(max_items, items.len());
+    let mut shown: Vec<String> = items[..take_n]
+        .iter()
+        .map(|s| s.as_ref().to_string())
+        .collect();
+    if items.len() > max_items {
+        shown.push(format!("... +{} opções", items.len() - max_items));
+    }
+    shown.join(", ")
 }
