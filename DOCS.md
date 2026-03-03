@@ -1,198 +1,174 @@
 # Documentação - Dr. Pizza CLI
 
-Referência completa de todos os comandos, flags e opções da CLI.
+Referência de comandos, flags e comportamento da CLI.
 
 ## Flag global
 
 | Flag | Descrição |
-|------|-----------|
-| `-u <ID>`, `--unidade <ID>` | Define a unidade a ser usada no comando |
+|---|---|
+| `-u <ID>`, `--unidade <ID>` | Define unidade por **ID da lista** (`0,1,2...`) |
 
-Esta flag pode ser combinada com qualquer subcomando.
+Exemplo:
 
----
+```bash
+drpizza unidades --all
+drpizza menu -u 0
+```
 
 ## Comandos
 
 ### `pedir`
 
-Inicia o assistente interativo de pedido. Este é o comando padrão quando nenhum subcomando é informado.
+Inicia o assistente interativo de compra.
 
-**Flags:**
+Flags:
 
 | Flag | Descrição |
-|------|-----------|
-| `-s`, `--stateless` | Modo anônimo: ignora dados salvos em `~/.drpizza` |
-| `--no-cache` | Ignora cache e força busca atualizada do cardápio |
+|---|---|
+| `-s`, `--stateless` | Ignora arquivos locais (`~/.drpizza`, cache) |
+| `--no-cache` | Força busca de cardápio sem cache |
 
-**Exemplos:**
+Exemplos:
 
 ```bash
-# Iniciar pedido normalmente
 drpizza pedir
-
-# Pedido com unidade específica
-drpizza pedir -u 5
-
-# Pedido em modo anônimo (sem dados salvos)
-drpizza pedir -s
-
-# Forçar atualização do cardápio
-drpizza pedir --no-cache
+drpizza pedir -u 1
+drpizza pedir --stateless
 ```
 
----
+Observações:
+
+- A confirmação final permite editar pagamento, observação, troco, itens e endereço.
+- No resumo final:
+  - `C` confirma
+  - `E` edita opções
+  - `X` cancela compra
 
 ### `menu`
 
-Exibe o cardápio completo com preços e bordas.
+Exibe/navega no cardápio.
 
-**Flags:**
+Flags:
 
 | Flag | Descrição |
-|------|-----------|
-| `--no-pagination` | Exibe o cardápio completo sem paginação |
-| `--no-cache` | Ignora cache e força busca atualizada do cardápio |
+|---|---|
+| `--no-pagination` | Exibe tudo de uma vez |
+| `--no-cache` | Ignora cache de cardápio |
 
-**Exemplos:**
+Exemplos:
 
 ```bash
-# Ver cardápio com paginação
 drpizza menu
-
-# Ver cardápio completo de uma vez
 drpizza menu --no-pagination
-
-# Ver cardápio atualizado de uma unidade específica
-drpizza menu -u 3 --no-cache
+drpizza menu -u 0 --no-cache
 ```
-
----
 
 ### `unidades`
 
-Lista as unidades disponíveis. Por padrão, filtra pelo bairro do endereço padrão.
+Lista unidades (por padrão, com filtro pelo bairro do endereço padrão).
 
-**Flags:**
+Flags:
 
 | Flag | Descrição |
-|------|-----------|
-| `-a`, `--all` | Mostra todas as unidades (sem filtro por bairro) |
-| `--detalhes` | Exibe visão detalhada das unidades |
-| `-d <ID>`, `--default <ID>` | Define uma unidade como padrão para o endereço atual |
-| `--no-default` | Remove a unidade padrão do endereço atual |
+|---|---|
+| `-a`, `--all` | Mostra todas as unidades |
+| `--detalhes` | Visão detalhada |
+| `-d <ID>`, `--default <ID>` | Define unidade padrão para o endereço padrão (ID da lista) |
+| `--no-default` | Remove unidade padrão do endereço padrão |
 
-**Exemplos:**
+Exemplos:
 
 ```bash
-# Listar unidades próximas
 drpizza unidades
-
-# Listar todas as unidades
-drpizza unidades -a
-
-# Ver detalhes de todas as unidades
-drpizza unidades -a --detalhes
-
-# Definir unidade 3 como padrão
-drpizza unidades -d 3
-
-# Remover unidade padrão
-drpizza unidades --no-default
+drpizza unidades --all
+drpizza unidades --all --detalhes
+drpizza unidades --default 0
 ```
 
----
+### `status` (alias: `pedido`)
 
-### `pedido`
+Mostra o último pedido encontrado.
 
-Mostra o status do último pedido realizado.
-
-**Exemplos:**
+Exemplos:
 
 ```bash
-# Ver último pedido
+drpizza status
+drpizza status -u 0
+# compatibilidade
 drpizza pedido
-
-# Ver último pedido de uma unidade específica
-drpizza pedido -u 5
 ```
-
----
 
 ### `pedidos`
 
-Lista o histórico completo de pedidos.
+Mostra histórico e permite abrir detalhes por índice da lista.
 
-**Exemplos:**
+Exemplos:
 
 ```bash
-# Ver histórico de pedidos
 drpizza pedidos
+drpizza pedidos -u 0
 ```
-
----
 
 ### `perfil`
 
-Visualiza ou edita o perfil local (nome, telefone, client ID).
+Mostra/edita perfil local.
 
-**Flags:**
+Flags:
 
 | Flag | Descrição |
-|------|-----------|
-| `-e`, `--edit` | Edita o perfil interativamente |
+|---|---|
+| `-e`, `--edit` | Edita nome, telefone e senha auth |
 
-**Exemplos:**
+Exemplos:
 
 ```bash
-# Ver perfil
 drpizza perfil
-
-# Editar perfil
 drpizza perfil --edit
 ```
 
----
-
 ### `enderecos`
 
-Gerencia endereços de entrega salvos localmente.
+Gerencia endereços salvos no perfil local.
 
-**Flags:**
+Flags:
 
 | Flag | Descrição |
-|------|-----------|
-| `-s`, `--show` | Exibe endereços e sai (sem menu interativo) |
-| `-d <N>`, `--default <N>` | Define endereço padrão pelo índice (começa em 1) |
-| `-r <N>`, `--remove <N>` | Remove endereço pelo índice (começa em 1) |
-| `-a`, `--add` | Adiciona novo endereço diretamente |
+|---|---|
+| `-s`, `--show` | Lista endereços e sai |
+| `-d <N>`, `--default <N>` | Define endereço padrão (1-based) |
+| `-r <N>`, `--remove <N>` | Remove endereço (1-based) |
+| `-a`, `--add` | Adiciona endereço |
 
-**Exemplos:**
+Exemplos:
 
 ```bash
-# Gerenciar endereços interativamente
 drpizza enderecos
-
-# Apenas listar endereços
-drpizza enderecos -s
-
-# Definir o segundo endereço como padrão
-drpizza enderecos -d 2
-
-# Remover o terceiro endereço
-drpizza enderecos -r 3
-
-# Adicionar novo endereço
-drpizza enderecos -a
+drpizza enderecos --show
+drpizza enderecos --default 1
+drpizza enderecos --remove 2
+drpizza enderecos --add
 ```
-
----
 
 ## Arquivos locais
 
-| Arquivo | Descrição |
-|---------|-----------|
-| `~/.drpizza` | Perfil do usuário (nome, telefone, client ID, endereços, preferências) |
-| `~/.drpizza_menu_cache.json` | Cache do cardápio (válido por 30 minutos) |
+| Arquivo | Finalidade |
+|---|---|
+| `~/.drpizza` | Perfil local (nome, telefone, client_id, token, endereços, preferências) |
+| `~/.drpizza_menu_cache.json` | Cache de cardápio (TTL ~30min) |
 
-O modo `--stateless` ignora completamente esses arquivos, ideal para máquinas compartilhadas ou testes.
+No modo `--stateless`, ambos são ignorados.
+
+## Modo debug
+
+Para logs detalhados de API:
+
+```bash
+make debug
+./target/debug/drpizza pedidos
+```
+
+Ou:
+
+```bash
+cargo run --features dev -- pedidos
+```

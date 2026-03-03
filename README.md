@@ -1,34 +1,36 @@
-
 # Dr. Pizza CLI
 
-> **"Aqui é RECHEIO com PIZZA!"**
-
-Dr. Pizza é uma pizzaria de Campina Grande-PB, famosa pelo recheio generoso e sabor inconfundível. Agora você pode pedir direto do terminal com a **Dr. Pizza CLI**, consultar o cardápio, escolher sabores e gerenciar seus pedidos pela linha de comando.
+CLI para consultar cardápio e fazer pedidos da Dr. Pizza direto do terminal.
 
 ## Instalação
 
-Basta rodar no terminal:
+### Script (rápido)
 
-```sh
+```bash
 curl -fsSL https://raw.githubusercontent.com/raissonsouto/drpizza/main/install.sh | bash
 ```
 
-### Instalação manual
+### Manual
 
-Se preferir, clone o repositório e compile:
-
-```sh
+```bash
 git clone https://github.com/raissonsouto/drpizza.git
 cd drpizza
-make
+cargo build --release
 ```
 
-## Uso
+Binário gerado em `target/release/drpizza`.
 
-Depois de instalar, basta digitar `drpizza` no terminal para começar a pedir!
+## Comandos principais
 
-```sh
-drpizza
-```
+- `pedir`: fluxo completo de pedido (carrinho, endereço, pagamento, confirmação)
+- `menu`: navegação no cardápio
+- `unidades`: lista unidades e detalhes
+- `status`: mostra último pedido (`pedido` funciona como alias)
+- `pedidos`: mostra histórico
+- `perfil`: visualiza/edita perfil local
+- `enderecos`: gerencia endereços salvos
 
-Para ver a documentação completa de todos os comandos e opções, consulte o [DOCS.md](DOCS.md).
+## Documentação completa
+
+- Referência de comandos: [DOCS.md](DOCS.md)
+- Guia para contribuição: [CONTRIBUTING.md](CONTRIBUTING.md)
