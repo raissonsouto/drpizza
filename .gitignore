@@ -1,4 +1,23 @@
-/target
-/.idea
-/tmp
-/.claude
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Project-local temp files
+/tmp/
+
+# IDE/editor
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# Local assistant/tooling state
+/.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
