@@ -198,8 +198,10 @@ async fn fetch_all_orders(
             if !is_not_found_no_records(&msg) {
                 had_error = true;
             }
-            let token_invalid = msg.to_lowercase().contains("token inválido")
-                || msg.to_lowercase().contains("token invalido")
+            let msg_lower = msg.to_lowercase();
+            let token_invalid = msg_lower.contains("token inválido")
+                || msg_lower.contains("token invalido")
+                || msg_lower.contains("token expirado")
                 || msg.contains("401");
 
             if token_invalid {
@@ -394,6 +396,16 @@ fn print_order_detail(detail: &crate::models::OrderDetail) {
                 method,
                 status
             );
+            if let Some(qr_image) = pv.pix_qr_image.as_deref() {
+                if !qr_image.is_empty() {
+                    println!("      QR Code: {}", qr_image);
+                }
+            }
+            if let Some(copy_paste) = pv.pix_qr_copy_paste.as_deref() {
+                if !copy_paste.is_empty() {
+                    println!("      PIX copia e cola: {}", copy_paste);
+                }
+            }
         }
     }
 
