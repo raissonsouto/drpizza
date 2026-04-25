@@ -21,3 +21,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local order debugging captures
+/order-debug/
