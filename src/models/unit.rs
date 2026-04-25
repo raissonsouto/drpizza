@@ -45,9 +45,32 @@ pub struct DeliveryNeighborhood {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaymentMethod {
+    pub id: Option<u64>,
     pub name: Option<String>,
     pub method: Option<String>,
+    pub kind: Option<String>,
     pub active: Option<bool>,
+    pub fixed_fee: Option<f64>,
+    pub percentual_fee: Option<f64>,
+    pub available_on_menu: Option<bool>,
+    #[serde(default)]
+    pub available_for: Vec<String>,
+    #[serde(default)]
+    pub available_order_timings: Vec<String>,
+    pub allow_on_customer_first_order: Option<bool>,
+    pub online_payment_provider: Option<String>,
+    pub payment_fee: Option<f64>,
+    #[serde(default)]
+    pub brands: Vec<PaymentBrand>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PaymentBrand {
+    pub id: Option<u64>,
+    pub name: Option<String>,
+    pub kind: Option<String>,
+    pub image_key: Option<String>,
+    pub system_default: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

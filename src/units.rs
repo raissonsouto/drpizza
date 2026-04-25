@@ -122,10 +122,8 @@ fn maybe_save_default_unit(selected: &Unit, user_config: &Option<UserConfig>, op
 
     if let Some(cfg) = user_config {
         if let Some(idx) = cfg.endereco_padrao {
-            if idx < cfg.addresses.len() {
-                if cfg.addresses[idx].unidade_padrao == Some(selected.id) {
-                    return;
-                }
+            if idx < cfg.addresses.len() && cfg.addresses[idx].unidade_padrao == Some(selected.id) {
+                return;
             }
         }
         if cfg.nao_perguntar_unidade {
@@ -260,9 +258,7 @@ pub async fn list_units(
     };
 
     let user_config = config::load_user_config(opts);
-    let default_neighborhood = user_config
-        .as_ref()
-        .and_then(|cfg| get_default_neighborhood(cfg));
+    let default_neighborhood = user_config.as_ref().and_then(get_default_neighborhood);
 
     // Handle --no-default: remove default unit from current address
     if no_default {

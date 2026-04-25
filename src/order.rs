@@ -2,16 +2,23 @@ use crate::api;
 use crate::config::{self, AppOptions};
 use crate::menu;
 use crate::models::{
-    CartItem, MenuSelection, OrderAddressPayload, OrderData, OrderItemPayload, OrderPayload,
-    OrderSubItemPayload, PaymentMethod, PaymentValuePayload, SavedAddress, Unit, UserConfig,
+    CartItem, MenuSelection, OrderAddressPayload, OrderClientPayload, OrderItemPayload,
+    OrderPayload, OrderSubItemPayload, PaymentBrandPayload, PaymentMethod, PaymentValuePayload,
+    SavedAddress, Unit, UserConfig,
 };
 use crate::ui;
 use crate::units;
 use colored::*;
+use std::collections::HashMap;
 
 pub async fn start_order_flow(opts: &AppOptions) {
     let (selected_unit, ctx) = units::select_unit_and_context(opts).await;
-    let menu_data = config::get_menu_data(&ctx, opts).await;
+    let fresh_opts = AppOptions {
+        stateless: opts.stateless,
+        no_cache: true,
+        unit_id: opts.unit_id,
+    };
+    let menu_data = config::get_menu_data(&ctx, &fresh_opts).await;
 
     if menu_data.is_empty() {
         println!("{}", "O cardápio está vazio. Verifique a conexão.".red());
@@ -27,31 +34,33 @@ pub async fn start_order_flow(opts: &AppOptions) {
     while ordering {
         match menu::browse_menu_select(&menu_data) {
             Some(sel) => {
-                let mut item_price = sel.item.get_current_price();
+                let item_price = calculate_selection_price(&sel);
                 let flavor_names: Vec<String> =
                     sel.flavors.iter().map(|f| f.name.clone()).collect();
                 let flavor_ids: Vec<u32> = sel.flavors.iter().map(|f| f.id).collect();
-                for f in &sel.flavors {
-                    item_price += f.price;
-                }
                 let crust_name = sel
                     .crust
                     .as_ref()
                     .map(|c| c.name.clone())
                     .unwrap_or_else(|| "Tradicional".to_string());
                 let crust_id = sel.crust.as_ref().map(|c| c.id);
-                if let Some(c) = &sel.crust {
-                    item_price += c.price;
-                }
+                let extras = sel.extras.clone();
 
                 cart.push(CartItem {
                     item_id: sel.item.id,
                     name: sel.item.name.clone(),
+                    custom_code: sel.item.custom_code.clone(),
+                    print_area_id: sel.item.print_area_id,
+                    second_print_area_id: sel.item.second_print_area_id,
+                    category_id: sel.category_id,
+                    category_name: sel.category_name.clone(),
                     flavors: flavor_names.clone(),
                     flavor_ids,
                     crust: crust_name.clone(),
                     crust_id,
+                    extras,
                     price: item_price,
+                    price_without_discounts: calculate_selection_price_without_discounts(&sel),
                 });
                 total_price += item_price;
 
@@ -98,6 +107,17 @@ pub async fn start_order_flow(opts: &AppOptions) {
             );
         }
         println!("  Borda: {}", item.crust.truecolor(150, 150, 150));
+        if !item.extras.is_empty() {
+            let extras: Vec<String> = item
+                .extras
+                .iter()
+                .map(|e| format!("{}x {} ({})", e.quantity, e.name, e.add_on_name))
+                .collect();
+            println!(
+                "  Adicionais: {}",
+                extras.join(", ").truecolor(150, 150, 150)
+            );
+        }
     }
     println!("{}", "-------------------".bright_black());
     println!(
@@ -145,7 +165,7 @@ pub async fn start_order_flow(opts: &AppOptions) {
     ) = select_delivery_address(&user_config, opts).await;
 
     // Calculate delivery tax
-    let mut delivery_fee = calculate_delivery_fee(
+    let mut delivery_quote = calculate_delivery_quote(
         &ctx,
         &street,
         &number,
@@ -155,6 +175,8 @@ pub async fn start_order_flow(opts: &AppOptions) {
         &zip_code,
     )
     .await;
+    let mut delivery_fee = delivery_quote.value;
+    let mut delivery_estimated_time = delivery_quote.estimated_time.unwrap_or(0);
 
     let mut grand_total = total_price + delivery_fee;
 
@@ -365,7 +387,7 @@ pub async fn start_order_flow(opts: &AppOptions) {
                         zip_code = new_address.6;
                         landmark = new_address.7;
 
-                        delivery_fee = calculate_delivery_fee(
+                        delivery_quote = calculate_delivery_quote(
                             &ctx,
                             &street,
                             &number,
@@ -375,6 +397,8 @@ pub async fn start_order_flow(opts: &AppOptions) {
                             &zip_code,
                         )
                         .await;
+                        delivery_fee = delivery_quote.value;
+                        delivery_estimated_time = delivery_quote.estimated_time.unwrap_or(0);
                         total_price = cart.iter().map(|i| i.price).sum::<f64>();
                         grand_total = total_price + delivery_fee;
                     }
@@ -386,59 +410,156 @@ pub async fn start_order_flow(opts: &AppOptions) {
     }
 
     // Build payload
+    let subitem_catalog = build_subitem_catalog(&menu_data);
+
     let order_items: Vec<OrderItemPayload> = cart
         .iter()
         .map(|item| {
             let mut subitems: Vec<OrderSubItemPayload> = Vec::new();
             for &fid in &item.flavor_ids {
-                subitems.push(OrderSubItemPayload {
-                    subitem_id: fid,
-                    price: 0.0,
-                    quantity: 1,
-                });
+                let (sub_name, sub_code, add_on_id, add_on_name) = subitem_catalog
+                    .get(&(item.item_id, fid))
+                    .cloned()
+                    .unwrap_or_else(|| ("".to_string(), None, 0, "".to_string()));
+                merge_subitem(
+                    &mut subitems,
+                    OrderSubItemPayload {
+                        subitem_id: fid,
+                        quantity: 1,
+                        price: 0.0,
+                        total_price: 0.0,
+                        name: sub_name,
+                        custom_code: sub_code,
+                        add_on_id,
+                        add_on_name,
+                    },
+                );
             }
             if let Some(cid) = item.crust_id {
-                subitems.push(OrderSubItemPayload {
-                    subitem_id: cid,
-                    price: 0.0,
-                    quantity: 1,
-                });
+                let (sub_name, sub_code, add_on_id, add_on_name) = subitem_catalog
+                    .get(&(item.item_id, cid))
+                    .cloned()
+                    .unwrap_or_else(|| ("".to_string(), None, 0, "".to_string()));
+                merge_subitem(
+                    &mut subitems,
+                    OrderSubItemPayload {
+                        subitem_id: cid,
+                        quantity: 1,
+                        price: 0.0,
+                        total_price: 0.0,
+                        name: sub_name,
+                        custom_code: sub_code,
+                        add_on_id,
+                        add_on_name,
+                    },
+                );
+            }
+            for extra in &item.extras {
+                let (sub_name, sub_code, add_on_id, add_on_name) = subitem_catalog
+                    .get(&(item.item_id, extra.id))
+                    .cloned()
+                    .unwrap_or_else(|| (extra.name.clone(), None, 0, extra.add_on_name.clone()));
+                merge_subitem(
+                    &mut subitems,
+                    OrderSubItemPayload {
+                        subitem_id: extra.id,
+                        quantity: extra.quantity,
+                        price: extra.price,
+                        total_price: extra.price * extra.quantity as f64,
+                        name: sub_name,
+                        custom_code: sub_code,
+                        add_on_id,
+                        add_on_name,
+                    },
+                );
             }
             OrderItemPayload {
                 item_id: item.item_id,
+                kind: "regular_item".to_string(),
+                name: item.name.clone(),
+                custom_code: item.custom_code.clone(),
+                category_id: item.category_id,
+                category_name: item.category_name.clone(),
                 quantity: 1,
+                observation: observation.clone(),
+                unit_price: item.price,
                 price: item.price,
-                order_subitems: subitems,
+                price_without_discounts: item.price_without_discounts,
+                print_area_id: item.print_area_id,
+                second_print_area_id: item.second_print_area_id,
+                order_subitems_attributes: subitems,
             }
         })
         .collect();
 
+    let final_value = format!("{:.2}", grand_total);
+    let clean_phone: String = customer_phone
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    let estimated_time =
+        compute_order_estimated_time(selected_unit.preparation_time, delivery_estimated_time);
+
     let payload = OrderPayload {
-        order: OrderData {
-            order_type: "delivery".to_string(),
-            client_id,
-            observation,
-            delivery_address: OrderAddressPayload {
-                street,
-                house_number: number,
-                neighborhood,
-                city,
-                state,
-                zip_code,
-                landmark,
-                address_complement: complement,
-            },
-            order_items,
-            payment_values: vec![PaymentValuePayload {
-                payment_method: payment_choice.payload_method,
-                total: grand_total,
-            }],
+        final_value,
+        delivery_fee,
+        delivery_man_fee: None,
+        additional_fee: None,
+        estimated_time,
+        custom_fields_data: "[]".to_string(),
+        company_id: selected_unit.id,
+        confirmation: false,
+        order_type: "delivery".to_string(),
+        payment_values_attributes: vec![PaymentValuePayload {
+            id: payment_choice.id,
+            name: payment_choice.display_name.clone(),
+            fixed_fee: payment_choice.fixed_fee,
+            percentual_fee: payment_choice.percentual_fee,
+            available_on_menu: payment_choice.available_on_menu,
+            available_for: payment_choice.available_for.clone(),
+            available_order_timings: payment_choice.available_order_timings.clone(),
+            allow_on_customer_first_order: payment_choice.allow_on_customer_first_order,
+            online_payment_provider: payment_choice.online_payment_provider.clone(),
+            kind: payment_choice.kind.clone(),
+            brands: payment_choice.brands.clone(),
+            payment_method_id: payment_choice.id,
+            payment_method: payment_choice.payload_method.clone(),
+            payment_method_brand_id: payment_choice.default_brand_id,
+            payment_fee: payment_choice.payment_fee,
+            total: grand_total,
+        }],
+        scheduled_date: None,
+        scheduled_period: None,
+        earned_points: points_earned,
+        sales_channel: "catalog".to_string(),
+        customer_origin: None,
+        diswpp_message_id: None,
+        invoice_document: None,
+        client_id,
+        client: OrderClientPayload {
+            name: customer_name.clone(),
+            ddi: 55,
+            telephone: clean_phone,
         },
+        delivery_address: OrderAddressPayload {
+            street,
+            neighborhood,
+            address_complement: complement,
+            house_number: number,
+            city,
+            state,
+            landmark,
+            latitude: None,
+            longitude: None,
+            zip_code,
+        },
+        benefits: vec![],
+        order_items,
     };
 
     // Submit order
     let sp = ui::Spinner::new("Enviando pedido...");
-    match api::submit_order(&ctx, &payload).await {
+    match api::submit_order(&ctx, &payload, None).await {
         Ok(order) => {
             sp.stop();
             println!();
@@ -451,11 +572,15 @@ pub async fn start_order_flow(opts: &AppOptions) {
                 "📌 Status: {}",
                 ui::translate_status(&order.status).yellow()
             );
-            if let Some(prep_time) = selected_unit.preparation_time {
-                println!(
-                    "⏱️  Tempo estimado: {} minutos",
-                    format!("{}", prep_time).green()
-                );
+            println!(
+                "⏱️  Tempo estimado: {} minutos",
+                format!("{}", estimated_time).green()
+            );
+            if is_pix_method(&payment_choice.payload_method) {
+                match api::fetch_order_detail(&ctx, &order.uid).await {
+                    Ok(detail) => print_pix_payment(&detail),
+                    Err(e) => eprintln!("Não foi possível carregar os dados do PIX: {}", e),
+                }
             }
             println!("{}", "\n🍕 Aguarde sua pizza! Bom apetite!".green().bold());
         }
@@ -652,7 +777,12 @@ async fn ensure_client_id(
     }
 
     let sp = ui::Spinner::new("Registrando cliente...");
-    match api::register_client(ctx, name, phone).await {
+    let client_result = match api::find_client_by_phone(ctx, phone).await {
+        Ok(result) => Ok(result),
+        Err(_) => api::register_client(ctx, name, phone).await,
+    };
+
+    match client_result {
         Ok(result) => {
             sp.stop();
             let cid = result.client_id;
@@ -685,8 +815,20 @@ async fn ensure_client_id(
 }
 
 struct PaymentChoice {
+    id: Option<u64>,
     payload_method: String,
     display_name: String,
+    kind: String,
+    fixed_fee: Option<f64>,
+    percentual_fee: Option<f64>,
+    available_on_menu: bool,
+    available_for: Vec<String>,
+    available_order_timings: Vec<String>,
+    allow_on_customer_first_order: bool,
+    online_payment_provider: Option<String>,
+    payment_fee: Option<f64>,
+    brands: Vec<PaymentBrandPayload>,
+    default_brand_id: Option<u64>,
 }
 
 fn select_payment_method(unit: &Unit, total: f64) -> Option<PaymentChoice> {
@@ -736,6 +878,7 @@ fn format_payment_name(method: &str) -> String {
         "credit_card" => "Cartão de Crédito".to_string(),
         "debit_card" => "Cartão de Débito".to_string(),
         "pix" => "PIX".to_string(),
+        "pix_auto" => "PIX".to_string(),
         "meal_voucher" => "Vale Refeição".to_string(),
         other => other.to_string(),
     }
@@ -747,8 +890,6 @@ fn payment_choice_from(pm: &PaymentMethod) -> PaymentChoice {
 
     let payload_method = if !raw_method.is_empty() {
         raw_method.to_string()
-    } else if !raw_name.is_empty() {
-        raw_name.to_string()
     } else {
         infer_payment_method_from_name(raw_name)
     };
@@ -759,15 +900,43 @@ fn payment_choice_from(pm: &PaymentMethod) -> PaymentChoice {
         format_payment_name(&payload_method)
     };
 
+    let brands = if pm.brands.is_empty() {
+        vec![PaymentBrandPayload {
+            id: None,
+            name: None,
+            kind: None,
+            image_key: None,
+            system_default: true,
+        }]
+    } else {
+        pm.brands.iter().map(PaymentBrandPayload::from).collect()
+    };
+
+    let kind = pm.kind.clone().unwrap_or_else(|| payload_method.clone());
+
     PaymentChoice {
+        id: pm.id,
         payload_method,
         display_name,
+        kind,
+        fixed_fee: pm.fixed_fee,
+        percentual_fee: pm.percentual_fee,
+        available_on_menu: pm.available_on_menu.unwrap_or(true),
+        available_for: pm.available_for.clone(),
+        available_order_timings: pm.available_order_timings.clone(),
+        allow_on_customer_first_order: pm.allow_on_customer_first_order.unwrap_or(true),
+        online_payment_provider: pm.online_payment_provider.clone(),
+        payment_fee: pm.payment_fee,
+        default_brand_id: brands.iter().find_map(|brand| brand.id),
+        brands,
     }
 }
 
 fn infer_payment_method_from_name(name: &str) -> String {
     let n = name.to_lowercase();
-    if n.contains("pix") {
+    if n.contains("pix") && (n.contains("auto") || n.contains("autom")) {
+        "pix_auto".to_string()
+    } else if n.contains("pix") {
         "pix".to_string()
     } else if n.contains("débito") || n.contains("debito") {
         "debit_card".to_string()
@@ -786,6 +955,32 @@ fn is_money_method(method: &str) -> bool {
     method.eq_ignore_ascii_case("money")
 }
 
+fn is_pix_method(method: &str) -> bool {
+    method.to_lowercase().contains("pix")
+}
+
+fn print_pix_payment(detail: &crate::models::OrderDetail) {
+    if let Some(payment) = detail.payment_values.iter().find(|pv| {
+        pv.payment_method
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("pix")
+    }) {
+        println!("\n{}", "💠 Pagamento PIX".yellow().bold());
+        if let Some(qr_image) = payment.pix_qr_image.as_deref() {
+            if !qr_image.is_empty() {
+                println!("🖼️  QR Code: {}", qr_image);
+            }
+        }
+        if let Some(copy_paste) = payment.pix_qr_copy_paste.as_deref() {
+            if !copy_paste.is_empty() {
+                println!("📋 PIX copia e cola:\n{}", copy_paste);
+            }
+        }
+    }
+}
+
 fn compose_observation(change_for: Option<&str>, note: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(v) = change_for {
@@ -800,34 +995,125 @@ fn compose_observation(change_for: Option<&str>, note: &str) -> String {
 }
 
 fn selection_to_cart_item(sel: MenuSelection) -> CartItem {
-    let mut item_price = sel.item.get_current_price();
+    let item_price = calculate_selection_price(&sel);
+    let item_price_without_discounts = calculate_selection_price_without_discounts(&sel);
     let flavor_names: Vec<String> = sel.flavors.iter().map(|f| f.name.clone()).collect();
     let flavor_ids: Vec<u32> = sel.flavors.iter().map(|f| f.id).collect();
-    for f in &sel.flavors {
-        item_price += f.price;
-    }
     let crust_name = sel
         .crust
         .as_ref()
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "Tradicional".to_string());
     let crust_id = sel.crust.as_ref().map(|c| c.id);
-    if let Some(c) = &sel.crust {
-        item_price += c.price;
-    }
 
     CartItem {
         item_id: sel.item.id,
         name: sel.item.name.clone(),
+        custom_code: sel.item.custom_code,
+        print_area_id: sel.item.print_area_id,
+        second_print_area_id: sel.item.second_print_area_id,
+        category_id: sel.category_id,
+        category_name: sel.category_name,
         flavors: flavor_names,
         flavor_ids,
         crust: crust_name,
         crust_id,
+        extras: sel.extras,
         price: item_price,
+        price_without_discounts: item_price_without_discounts,
     }
 }
 
-async fn calculate_delivery_fee(
+fn calculate_selection_price(sel: &MenuSelection) -> f64 {
+    let mut item_price = sel.item.get_current_price();
+
+    if !sel.flavors.is_empty() && item_price <= 0.0 {
+        let flavors_total: f64 = sel.flavors.iter().map(|f| f.price).sum();
+        item_price = flavors_total / sel.flavors.len() as f64;
+    }
+
+    if let Some(c) = &sel.crust {
+        item_price += c.price;
+    }
+
+    for extra in &sel.extras {
+        item_price += extra.price * extra.quantity as f64;
+    }
+
+    item_price
+}
+
+fn calculate_selection_price_without_discounts(sel: &MenuSelection) -> f64 {
+    let mut item_price = sel.item.price;
+
+    if !sel.flavors.is_empty() && item_price <= 0.0 {
+        let flavors_total: f64 = sel.flavors.iter().map(|f| f.price).sum();
+        item_price = flavors_total / sel.flavors.len() as f64;
+    }
+
+    if let Some(c) = &sel.crust {
+        item_price += c.price;
+    }
+
+    for extra in &sel.extras {
+        item_price += extra.price * extra.quantity as f64;
+    }
+
+    item_price
+}
+
+type SubitemCatalogKey = (u32, u32);
+type SubitemCatalogValue = (String, Option<String>, u32, String);
+type SubitemCatalog = HashMap<SubitemCatalogKey, SubitemCatalogValue>;
+
+fn build_subitem_catalog(menu_data: &[crate::models::MenuCategory]) -> SubitemCatalog {
+    let mut map = HashMap::new();
+    for cat in menu_data {
+        for item in &cat.items {
+            for add_on in &item.add_ons {
+                for sub in &add_on.subitems {
+                    map.insert(
+                        (item.id, sub.id),
+                        (
+                            sub.name.clone(),
+                            sub.custom_code.clone(),
+                            add_on.id,
+                            add_on.name.clone(),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    map
+}
+
+fn compute_order_estimated_time(
+    preparation_time: Option<u32>,
+    delivery_estimated_time: u32,
+) -> u32 {
+    if delivery_estimated_time > 0 {
+        preparation_time.unwrap_or(0) + delivery_estimated_time
+    } else {
+        preparation_time.unwrap_or(30)
+    }
+}
+
+fn merge_subitem(subitems: &mut Vec<OrderSubItemPayload>, incoming: OrderSubItemPayload) {
+    if let Some(existing) = subitems.iter_mut().find(|sub| {
+        sub.subitem_id == incoming.subitem_id
+            && sub.add_on_id == incoming.add_on_id
+            && sub.custom_code == incoming.custom_code
+    }) {
+        existing.quantity += incoming.quantity;
+        existing.total_price += incoming.total_price;
+        return;
+    }
+
+    subitems.push(incoming);
+}
+
+async fn calculate_delivery_quote(
     ctx: &api::ApiContext,
     street: &str,
     number: &str,
@@ -835,20 +1121,26 @@ async fn calculate_delivery_fee(
     city: &str,
     state: &str,
     zip_code: &str,
-) -> f64 {
+) -> api::DeliveryQuote {
     let sp = ui::Spinner::new("Calculando frete...");
     match api::calculate_delivery_tax(ctx, street, number, neighborhood, city, state, zip_code)
         .await
     {
-        Ok(fee) => {
+        Ok(quote) => {
             sp.stop();
-            println!("🚚 Taxa de entrega: {}", format!("R$ {:.2}", fee).yellow());
-            fee
+            println!(
+                "🚚 Taxa de entrega: {}",
+                format!("R$ {:.2}", quote.value).yellow()
+            );
+            quote
         }
         Err(e) => {
             drop(sp);
             eprintln!("Erro ao calcular taxa de entrega: {}", e);
-            0.0
+            api::DeliveryQuote {
+                value: 0.0,
+                estimated_time: None,
+            }
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::config::{self, AppOptions};
-use crate::models::{AddOnGroup, MenuCategory, MenuItem, MenuSelection, SubItem};
+use crate::models::{AddOnGroup, MenuCategory, MenuItem, MenuSelection, SelectedSubItem, SubItem};
 use crate::ui;
 use crate::units;
 use colored::*;
@@ -194,10 +194,14 @@ fn select_category_item(category: &MenuCategory) -> Option<MenuSelection> {
                 let item = category.items[(idx - 1) as usize].clone();
                 let flavors = select_flavors(&item);
                 let crust = select_crust(&item);
+                let extras = select_other_addons(&item);
                 return Some(MenuSelection {
                     item,
+                    category_id: category.id,
+                    category_name: category.name.clone(),
                     flavors,
                     crust,
+                    extras,
                 });
             }
         }
@@ -300,10 +304,7 @@ fn select_flavors(item: &MenuItem) -> Vec<SubItem> {
 }
 
 fn select_crust(item: &MenuItem) -> Option<SubItem> {
-    let addon = match find_addon(item, AddonKind::Crusts) {
-        Some(a) => a,
-        None => return None,
-    };
+    let addon = find_addon(item, AddonKind::Crusts)?;
 
     println!("\n{}", "Bordas disponíveis".yellow().bold());
     for (i, sub) in addon.subitems.iter().enumerate() {
@@ -327,6 +328,55 @@ fn select_crust(item: &MenuItem) -> Option<SubItem> {
         }
         println!("{}", "Opção inválida.".red());
     }
+}
+
+fn select_other_addons(item: &MenuItem) -> Vec<SelectedSubItem> {
+    let mut selected = Vec::new();
+    let mut other_groups: Vec<&AddOnGroup> = item
+        .add_ons
+        .iter()
+        .filter(|a| classify_addon(&a.name) == AddonKind::Other && !a.subitems.is_empty())
+        .collect();
+
+    if other_groups.is_empty() {
+        return selected;
+    }
+
+    other_groups.sort_by(|a, b| a.name.cmp(&b.name));
+    println!("\n{}", "Adicionais".yellow().bold());
+
+    for group in other_groups {
+        println!("  {}", group.name.bold());
+        for sub in &group.subitems {
+            let price_label = if sub.price > 0.0 {
+                format!(" (+R$ {:.2})", sub.price)
+            } else {
+                String::new()
+            };
+            let prompt = format!(
+                "    Quantidade de {}{} (0 para não adicionar): ",
+                sub.name, price_label
+            );
+            let quantity = loop {
+                if let Some(qty) = ui::read_int(&prompt) {
+                    break qty;
+                }
+                println!("{}", "Quantidade inválida.".red());
+            };
+
+            if quantity > 0 {
+                selected.push(SelectedSubItem {
+                    id: sub.id,
+                    name: sub.name.clone(),
+                    price: sub.price,
+                    quantity,
+                    add_on_name: group.name.clone(),
+                });
+            }
+        }
+    }
+
+    selected
 }
 
 // --- Helpers ---
