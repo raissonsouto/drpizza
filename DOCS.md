@@ -12,7 +12,7 @@ Exemplo:
 
 ```bash
 drpizza unidades --all
-drpizza menu -u 0
+drpizza cardapio -u 0
 ```
 
 ## Comandos
@@ -44,7 +44,7 @@ Observações:
   - `E` edita opções
   - `X` cancela compra
 
-### `menu`
+### `cardapio`
 
 Exibe/navega no cardápio.
 
@@ -58,9 +58,9 @@ Flags:
 Exemplos:
 
 ```bash
-drpizza menu
-drpizza menu --no-pagination
-drpizza menu -u 0 --no-cache
+drpizza cardapio
+drpizza cardapio --no-pagination
+drpizza cardapio -u 0 --no-cache
 ```
 
 ### `unidades`

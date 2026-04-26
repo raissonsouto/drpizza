@@ -41,7 +41,8 @@ enum Commands {
         no_cache: bool,
     },
     /// Exibe o cardápio completo com preços e bordas
-    Menu {
+    #[command(name = "cardapio")]
+    Cardapio {
         /// Exibe o cardápio sem paginação
         #[arg(long)]
         no_pagination: bool,
@@ -116,7 +117,7 @@ pub async fn run() {
         }) => {
             order::start_order_flow(&base_opts(stateless, no_cache)).await;
         }
-        Some(Commands::Menu {
+        Some(Commands::Cardapio {
             no_pagination,
             no_cache,
         }) => {

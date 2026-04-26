@@ -23,7 +23,7 @@ Binário gerado em `target/release/drpizza`.
 ## Comandos principais
 
 - `pedir`: fluxo completo de pedido (carrinho, endereço, pagamento, confirmação)
-- `menu`: navegação no cardápio
+- `cardapio`: navegação no cardápio
 - `unidades`: lista unidades e detalhes
 - `status`: mostra último pedido (`pedido` funciona como alias)
 - `pedidos`: mostra histórico
