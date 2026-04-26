@@ -9,6 +9,8 @@ use crate::models::{
 use crate::ui;
 use crate::units;
 use colored::*;
+use qrcode::render::unicode;
+use qrcode::QrCode;
 use std::collections::HashMap;
 
 pub async fn start_order_flow(opts: &AppOptions) {
@@ -960,6 +962,12 @@ fn is_pix_method(method: &str) -> bool {
 }
 
 fn print_pix_payment(detail: &crate::models::OrderDetail) {
+    if let Some(output) = build_pix_payment_output(detail) {
+        println!("\n{}", output);
+    }
+}
+
+fn build_pix_payment_output(detail: &crate::models::OrderDetail) -> Option<String> {
     if let Some(payment) = detail.payment_values.iter().find(|pv| {
         pv.payment_method
             .as_deref()
@@ -967,18 +975,32 @@ fn print_pix_payment(detail: &crate::models::OrderDetail) {
             .to_lowercase()
             .contains("pix")
     }) {
-        println!("\n{}", "💠 Pagamento PIX".yellow().bold());
-        if let Some(qr_image) = payment.pix_qr_image.as_deref() {
-            if !qr_image.is_empty() {
-                println!("🖼️  QR Code: {}", qr_image);
+        let mut lines: Vec<String> = vec!["💠 Pagamento PIX".to_string()];
+
+        if let Some(copy_paste) = payment.pix_qr_copy_paste.as_deref() {
+            let copy_paste = copy_paste.trim();
+            if !copy_paste.is_empty() {
+                if let Some(qr) = render_qr_terminal(copy_paste) {
+                    lines.push("📱 Escaneie o QR Code abaixo para pagar:".to_string());
+                    lines.push(qr);
+                }
+                lines.push("📋 PIX copia e cola:".to_string());
+                lines.push(copy_paste.to_string());
             }
         }
-        if let Some(copy_paste) = payment.pix_qr_copy_paste.as_deref() {
-            if !copy_paste.is_empty() {
-                println!("📋 PIX copia e cola:\n{}", copy_paste);
-            }
+
+        if lines.len() > 1 {
+            return Some(lines.join("\n"));
         }
     }
+
+    None
+}
+
+fn render_qr_terminal(copy_paste: &str) -> Option<String> {
+    let qr = QrCode::new(copy_paste.as_bytes()).ok()?;
+    let rendered = qr.render::<unicode::Dense1x2>().quiet_zone(true).build();
+    Some(rendered.trim_end().to_string())
 }
 
 fn compose_observation(change_for: Option<&str>, note: &str) -> String {
