@@ -75,6 +75,20 @@ enum Commands {
     Status,
     /// Lista histórico de pedidos
     Pedidos,
+    /// Cancela um pedido pendente
+    Cancelar {
+        /// Índice (IDX) da lista de pedidos pendentes
+        #[arg(short = 'i', long = "indice")]
+        indice: Option<usize>,
+
+        /// Motivo opcional do cancelamento
+        #[arg(short = 'm', long = "motivo")]
+        motivo: Option<String>,
+
+        /// Não pede confirmação antes de cancelar
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
     /// Mostra pontos acumulados e benefícios de fidelidade
     Pontos,
     /// Gerencia o perfil local (nome, telefone)
@@ -139,6 +153,14 @@ pub async fn run() {
         }
         Some(Commands::Pedidos) => {
             orders::show_order_history(&base_opts(false, false)).await;
+        }
+        Some(Commands::Cancelar {
+            indice,
+            motivo,
+            yes,
+        }) => {
+            orders::cancel_order_flow(&base_opts(false, false), indice, motivo.as_deref(), yes)
+                .await;
         }
         Some(Commands::Pontos) => {
             points::show_points(&base_opts(false, false)).await;

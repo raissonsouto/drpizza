@@ -169,6 +169,163 @@ pub async fn show_order_history(opts: &AppOptions) {
     }
 }
 
+pub async fn cancel_order_flow(
+    opts: &AppOptions,
+    selected_index: Option<usize>,
+    reason_arg: Option<&str>,
+    skip_confirmation: bool,
+) {
+    let (client_id, _auth_token, auth_password) = match get_client_info(opts) {
+        Some(info) => info,
+        None => return,
+    };
+
+    let (_unit, ctx) = units::select_unit_and_context(opts).await;
+
+    let sp = ui::Spinner::new("Buscando pedidos pendentes...");
+    let pending_orders = api::fetch_pending_orders(&ctx, client_id).await;
+    sp.stop();
+
+    let mut pending_orders = match pending_orders {
+        Ok(orders) => orders,
+        Err(e) => {
+            let msg = e.to_string().to_lowercase();
+            let token_invalid = msg.contains("token inválido")
+                || msg.contains("token invalido")
+                || msg.contains("token expirado")
+                || msg.contains("401");
+
+            if token_invalid {
+                if let Some(password) = auth_password.as_deref() {
+                    match api::login_client_session(&ctx, client_id, password).await {
+                        Ok(new_token) => {
+                            save_auth_token(opts, &new_token);
+                            match api::fetch_pending_orders(&ctx, client_id).await {
+                                Ok(orders) => orders,
+                                Err(e2) => {
+                                    eprintln!(
+                                        "Não foi possível consultar pedidos pendentes: {}",
+                                        e2
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e2) => {
+                            eprintln!(
+                                "Não foi possível renovar token para cancelar pedido: {}",
+                                e2
+                            );
+                            return;
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "Token expirado e senha ausente. Configure em `drpizza perfil --edit` ou `DRPIZZA_AUTH_PASSWORD`."
+                    );
+                    return;
+                }
+            } else {
+                eprintln!("Não foi possível consultar pedidos pendentes: {}", e);
+                return;
+            }
+        }
+    };
+
+    pending_orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    if pending_orders.is_empty() {
+        println!("Nenhum pedido pendente para cancelar.");
+        return;
+    }
+
+    println!("\n{}", "🛑 --- CANCELAR PEDIDO ---".yellow().bold());
+    println!(
+        "  {:<4} {:<10} {:<12} {:<25} {:<12}",
+        "IDX".bold(),
+        "PEDIDO".bold(),
+        "VALOR".bold(),
+        "STATUS".bold(),
+        "DATA".bold()
+    );
+    println!("  {}", "-".repeat(69).bright_black());
+
+    for (idx, order) in pending_orders.iter().enumerate() {
+        println!(
+            "  {:<4} {:<10} {:<12} {:<25} {:<12}",
+            idx.to_string().cyan(),
+            order.order_number.to_string().bright_black(),
+            format!("R$ {:.2}", order.final_value).green(),
+            ui::translate_status(&order.status),
+            format_date_br(&order.created_at).bright_black()
+        );
+    }
+
+    let selected = match selected_index {
+        Some(idx) => idx,
+        None => {
+            let choice = ui::read_input(
+                "\nDigite o índice (IDX) do pedido para cancelar (ou ENTER para sair): ",
+            );
+            if choice.is_empty() {
+                return;
+            }
+            match choice.parse::<usize>() {
+                Ok(idx) => idx,
+                Err(_) => {
+                    println!("{}", "Índice inválido.".red());
+                    return;
+                }
+            }
+        }
+    };
+
+    let Some(order) = pending_orders.get(selected) else {
+        println!("{}", "Índice não encontrado na lista.".red());
+        return;
+    };
+
+    let reason = if let Some(r) = reason_arg {
+        r.trim().to_string()
+    } else {
+        ui::read_input("Motivo do cancelamento (opcional): ")
+    };
+
+    if !skip_confirmation {
+        let confirm = ui::read_input(&format!(
+            "Confirmar cancelamento do pedido #{}? (S/N): ",
+            order.order_number
+        ));
+        if confirm.trim().to_uppercase() != "S" {
+            println!("{}", "Cancelamento abortado pelo usuário.".yellow());
+            return;
+        }
+    }
+
+    let reason_opt = if reason.is_empty() {
+        None
+    } else {
+        Some(reason.as_str())
+    };
+
+    let sp2 = ui::Spinner::new("Enviando solicitação de cancelamento...");
+    match api::cancel_order(&ctx, &order.uid, reason_opt).await {
+        Ok(()) => {
+            sp2.stop();
+            println!(
+                "{}",
+                format!("Pedido #{} cancelado com sucesso.", order.order_number)
+                    .green()
+                    .bold()
+            );
+        }
+        Err(e) => {
+            drop(sp2);
+            eprintln!("Não foi possível cancelar o pedido: {}", e);
+        }
+    }
+}
+
 pub(crate) async fn fetch_all_orders(
     ctx: &api::ApiContext,
     opts: &AppOptions,

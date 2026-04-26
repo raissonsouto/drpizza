@@ -5,7 +5,7 @@ use crate::models::{
 };
 use hmac::{Hmac, Mac};
 use rand::Rng;
-use reqwest::header::HeaderMap;
+use reqwest::{header::HeaderMap, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
@@ -1198,6 +1198,73 @@ pub async fn fetch_order_detail(
     Ok(detail)
 }
 
+// --- Cancel Order ---
+
+pub async fn cancel_order(
+    ctx: &ApiContext,
+    order_uid: &str,
+    cancellation_reason: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let reason = cancellation_reason.unwrap_or("").trim();
+    let cancel_payload = if reason.is_empty() {
+        serde_json::json!({ "status": "cancelled" })
+    } else {
+        serde_json::json!({
+            "status": "cancelled",
+            "cancellation_reason": reason
+        })
+    };
+
+    let attempts: [(Method, String, Option<Value>); 3] = [
+        (
+            Method::PUT,
+            integration_url(&format!("/api/menu/company/orders/{}", order_uid)),
+            Some(cancel_payload.clone()),
+        ),
+        (
+            Method::PUT,
+            integration_url(&format!("/api/menu/company/orders/{}/cancel", order_uid)),
+            Some(cancel_payload.clone()),
+        ),
+        (
+            Method::POST,
+            integration_url(&format!("/api/menu/company/orders/{}/cancel", order_uid)),
+            Some(cancel_payload),
+        ),
+    ];
+
+    let client = reqwest::Client::new();
+    let mut last_error: Option<String> = None;
+
+    for (method, url, payload) in attempts {
+        let mut req = client
+            .request(method.clone(), &url)
+            .header("accept", "application/json, text/plain, */*")
+            .header("content-type", "application/json;charset=utf-8")
+            .header("company-id", ctx.company_id.to_string())
+            .header("company", &ctx.company_slug)
+            .header("sessionid", &ctx.session_id);
+
+        if let Some(body) = payload {
+            req = req.json(&body);
+        }
+
+        let res = req.send().await?;
+        let status = res.status();
+
+        if status.is_success() {
+            return Ok(());
+        }
+
+        let error_text = res.text().await.unwrap_or_default();
+        last_error = Some(format!("{} {} -> {}: {}", method, url, status, error_text));
+    }
+
+    Err(last_error
+        .unwrap_or_else(|| "Não foi possível cancelar o pedido.".to_string())
+        .into())
+}
+
 // --- Submit Order ---
 
 pub async fn submit_order(
@@ -1298,9 +1365,9 @@ pub async fn submit_order(
 #[cfg(test)]
 mod tests {
     use super::{
-        calculate_delivery_tax, compute_order_trace_id, fetch_closed_orders, fetch_order_detail,
-        fetch_pending_orders, fetch_units, override_integration_base_url, register_client,
-        serialize_order_payload_legacy, submit_order, ApiContext,
+        calculate_delivery_tax, cancel_order, compute_order_trace_id, fetch_closed_orders,
+        fetch_order_detail, fetch_pending_orders, fetch_units, override_integration_base_url,
+        register_client, serialize_order_payload_legacy, submit_order, ApiContext,
     };
     use crate::models::{
         OrderAddressPayload, OrderClientPayload, OrderItemPayload, OrderPayload,
@@ -1524,6 +1591,29 @@ mod tests {
                 && body_json["payment_values_attributes"][0]["payment_method_brand_id"].as_u64()
                     == Some(49068)
                 && body_json["order_items"][0]["price_without_discounts"].as_f64() == Some(75.9)
+        }
+    }
+
+    struct CancelOrderMatcher;
+
+    impl Match for CancelOrderMatcher {
+        fn matches(&self, request: &Request) -> bool {
+            if first_header(request, "company-id") != Some("7842") {
+                return false;
+            }
+            if first_header(request, "company") != Some("dr_pizza__malvinas") {
+                return false;
+            }
+            if first_header(request, "sessionid") != Some("testsession") {
+                return false;
+            }
+
+            let Ok(body_json) = serde_json::from_slice::<Value>(&request.body) else {
+                return false;
+            };
+
+            body_json["status"].as_str() == Some("cancelled")
+                && body_json["cancellation_reason"].as_str() == Some("Cliente pediu cancelamento")
         }
     }
 
@@ -1828,5 +1918,27 @@ mod tests {
             detail.payment_values[0].pix_qr_copy_paste.as_deref(),
             Some("000201...")
         );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn cancel_order_sends_cancelled_status_to_api() {
+        let server = MockServer::start().await;
+        let _guard = override_integration_base_url(server.uri());
+        let ctx = sample_ctx();
+
+        Mock::given(method("PUT"))
+            .and(path("/api/menu/company/orders/5blw4hmo6"))
+            .and(CancelOrderMatcher)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "ok": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        cancel_order(&ctx, "5blw4hmo6", Some("Cliente pediu cancelamento"))
+            .await
+            .expect("cancel order");
     }
 }

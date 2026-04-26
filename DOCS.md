@@ -111,6 +111,26 @@ drpizza pedidos
 drpizza pedidos -u 0
 ```
 
+### `cancelar`
+
+Cancela um pedido pendente.
+
+Flags:
+
+| Flag | Descrição |
+|---|---|
+| `-i <IDX>`, `--indice <IDX>` | Cancela diretamente pelo índice da lista de pendentes |
+| `-m <TEXTO>`, `--motivo <TEXTO>` | Motivo opcional do cancelamento |
+| `-y`, `--yes` | Não pede confirmação |
+
+Exemplos:
+
+```bash
+drpizza cancelar
+drpizza cancelar -i 0
+drpizza cancelar -i 0 -m "Mudança de planos" -y
+```
+
 ### `pontos`
 
 Mostra os pontos acumulados com base no histórico de pedidos e lista benefícios de fidelidade.
