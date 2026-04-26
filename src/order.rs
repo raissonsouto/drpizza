@@ -251,6 +251,12 @@ pub async fn start_order_flow(opts: &AppOptions) {
             street, number, neighborhood, city
         );
         println!("💳 Pagamento: {}", payment_choice.display_name);
+        if is_pay_on_delivery_method(&payment_choice.payload_method) {
+            println!(
+                "   {}",
+                "Este pagamento é feito na entrega do pedido.".yellow()
+            );
+        }
         if !observation.is_empty() {
             println!("📝 Obs: {}", observation.truecolor(150, 150, 150));
         }
@@ -851,7 +857,17 @@ fn select_payment_method(unit: &Unit, total: f64) -> Option<PaymentChoice> {
     println!("\n{}", "💳 Forma de pagamento:".yellow().bold());
     for (i, pm) in active_methods.iter().enumerate() {
         let choice = payment_choice_from(pm);
-        println!("  [{}] {}", (i + 1).to_string().cyan(), choice.display_name);
+        let delivery_note = if is_pay_on_delivery_method(&choice.payload_method) {
+            " (pago na entrega)".bright_black().to_string()
+        } else {
+            String::new()
+        };
+        println!(
+            "  [{}] {}{}",
+            (i + 1).to_string().cyan(),
+            choice.display_name,
+            delivery_note
+        );
     }
 
     loop {
@@ -863,6 +879,12 @@ fn select_payment_method(unit: &Unit, total: f64) -> Option<PaymentChoice> {
                     choice.display_name.green(),
                     format!("R$ {:.2}", total).green().bold()
                 );
+                if is_pay_on_delivery_method(&choice.payload_method) {
+                    println!(
+                        "{}",
+                        "  Este pagamento é feito na entrega do pedido.".yellow()
+                    );
+                }
                 return Some(choice);
             }
         }
@@ -959,6 +981,13 @@ fn is_money_method(method: &str) -> bool {
 
 fn is_pix_method(method: &str) -> bool {
     method.to_lowercase().contains("pix")
+}
+
+fn is_pay_on_delivery_method(method: &str) -> bool {
+    matches!(
+        method.to_lowercase().as_str(),
+        "money" | "credit_card" | "debit_card"
+    )
 }
 
 fn print_pix_payment(detail: &crate::models::OrderDetail) {

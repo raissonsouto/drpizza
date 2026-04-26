@@ -40,6 +40,7 @@ Observações:
 
 - A confirmação final permite editar pagamento, observação, troco, itens e endereço.
 - Se o pagamento for PIX, o final do fluxo exibe QR Code no terminal e também o código "copia e cola".
+- Pagamentos em cartão de crédito, cartão de débito e dinheiro são realizados na entrega.
 - No resumo final:
   - `C` confirma
   - `E` edita opções
