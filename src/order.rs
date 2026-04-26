@@ -1167,6 +1167,169 @@ async fn calculate_delivery_quote(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_pix_payment_output, calculate_selection_price_without_discounts,
+        compute_order_estimated_time, merge_subitem,
+    };
+    use crate::models::{
+        MenuItem, MenuSelection, OrderDetail, OrderSubItemPayload, PaymentValue, SelectedSubItem,
+        SubItem,
+    };
+
+    fn sample_selection() -> MenuSelection {
+        MenuSelection {
+            item: MenuItem {
+                id: 4013811,
+                name: "6 ANOS DR PIZZA - Escolha até 2 Sabores".to_string(),
+                custom_code: Some("23097221".to_string()),
+                description: None,
+                price: 75.9,
+                promotional_price: Some(39.9),
+                promotional_price_active: true,
+                kind: "regular_item".to_string(),
+                print_area_id: Some(16062),
+                second_print_area_id: None,
+                add_ons: vec![],
+            },
+            category_id: 470669,
+            category_name: "6 ANOS DO DOUTOR".to_string(),
+            flavors: vec![
+                SubItem {
+                    id: 2118968,
+                    name: "Frango com Catupiry".to_string(),
+                    custom_code: Some("x.17744752".to_string()),
+                    price: 0.0,
+                },
+                SubItem {
+                    id: 2118969,
+                    name: "Pepperoni".to_string(),
+                    custom_code: Some("x.17744753".to_string()),
+                    price: 0.0,
+                },
+            ],
+            crust: Some(SubItem {
+                id: 866257,
+                name: "Borda tradicional".to_string(),
+                custom_code: Some("x.1374488".to_string()),
+                price: 0.0,
+            }),
+            extras: vec![SelectedSubItem {
+                id: 866319,
+                name: "ENVIAR SACHÊS".to_string(),
+                price: 0.0,
+                quantity: 2,
+                add_on_name: "ADICIONAIS".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn selection_price_without_discounts_uses_base_price_not_promotional_price() {
+        let selection = sample_selection();
+        assert_eq!(
+            calculate_selection_price_without_discounts(&selection),
+            75.9
+        );
+    }
+
+    #[test]
+    fn estimated_time_adds_delivery_time_to_preparation_time() {
+        assert_eq!(compute_order_estimated_time(Some(50), 30), 80);
+        assert_eq!(compute_order_estimated_time(None, 30), 30);
+        assert_eq!(compute_order_estimated_time(Some(50), 0), 50);
+        assert_eq!(compute_order_estimated_time(None, 0), 30);
+    }
+
+    #[test]
+    fn merge_subitem_accumulates_matching_entries() {
+        let mut subitems = vec![OrderSubItemPayload {
+            subitem_id: 2118968,
+            quantity: 1,
+            price: 0.0,
+            total_price: 0.0,
+            name: "Frango com Catupiry".to_string(),
+            custom_code: Some("x.17744752".to_string()),
+            add_on_id: 560168,
+            add_on_name: "Escolha até 2 sabores:".to_string(),
+        }];
+
+        merge_subitem(
+            &mut subitems,
+            OrderSubItemPayload {
+                subitem_id: 2118968,
+                quantity: 1,
+                price: 0.0,
+                total_price: 0.0,
+                name: "Frango com Catupiry".to_string(),
+                custom_code: Some("x.17744752".to_string()),
+                add_on_id: 560168,
+                add_on_name: "Escolha até 2 sabores:".to_string(),
+            },
+        );
+
+        merge_subitem(
+            &mut subitems,
+            OrderSubItemPayload {
+                subitem_id: 866257,
+                quantity: 1,
+                price: 0.0,
+                total_price: 0.0,
+                name: "Borda tradicional".to_string(),
+                custom_code: Some("x.1374488".to_string()),
+                add_on_id: 205099,
+                add_on_name: "Bordas".to_string(),
+            },
+        );
+
+        assert_eq!(subitems.len(), 2);
+        assert_eq!(subitems[0].quantity, 2);
+        assert_eq!(subitems[1].subitem_id, 866257);
+    }
+
+    #[test]
+    fn pix_payment_output_contains_terminal_qr_for_copy_paste() {
+        let detail = OrderDetail {
+            id: 1,
+            uid: "pix-order-uid".to_string(),
+            order_number: 1234,
+            status: "pending_online_payment".to_string(),
+            order_type: Some("delivery".to_string()),
+            delivery_fee: Some(8.5),
+            final_value: 48.4,
+            earned_points: Some(48),
+            observation: None,
+            created_at: "2026-04-26T10:20:30.000-03:00".to_string(),
+            order_items: vec![],
+            delivery_address: None,
+            payment_values: vec![PaymentValue {
+                total: 48.4,
+                payment_type: Some("online".to_string()),
+                payment_method: Some("pix_auto".to_string()),
+                status: Some("pending".to_string()),
+                pix_qr_image: Some("https://example.test/pix.png".to_string()),
+                pix_qr_copy_paste: Some(
+                    "00020101021226930014BR.GOV.BCB.PIX2571pix.example/charge/12345".to_string(),
+                ),
+            }],
+            status_changes: vec![],
+            client: None,
+        };
+
+        let output = build_pix_payment_output(&detail).expect("saida pix deveria existir");
+        println!("\n{}", output);
+        assert!(output.contains("💠 Pagamento PIX"));
+        assert!(output.contains("Escaneie o QR Code"));
+        assert!(output.contains("PIX copia e cola"));
+        assert!(output.contains("00020101021226930014BR.GOV.BCB.PIX"));
+        assert!(
+            output.contains('█') || output.contains('▀') || output.contains('▄'),
+            "saida deveria conter blocos unicode do QR"
+        );
+    }
+}
+
 fn list_rewards() {
     let rewards = config::get_loyalty_rewards();
     println!("\n{}", "🏆 --- PROGRAMA DE FIDELIDADE ---".yellow().bold());

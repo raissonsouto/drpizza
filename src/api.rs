@@ -10,9 +10,47 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 use std::error::Error;
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 type HmacSha256 = Hmac<Sha256>;
 const ORDER_TRACE_SECRET: &str = "jEYqVsGg83ZRJgw97yrK";
+const DEFAULT_INTEGRATION_BASE_URL: &str = "https://integracao.cardapioweb.com";
+
+#[cfg(test)]
+fn test_integration_base_url() -> &'static Mutex<Option<String>> {
+    static TEST_BASE_URL: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    TEST_BASE_URL.get_or_init(|| Mutex::new(None))
+}
+
+fn integration_base_url() -> String {
+    #[cfg(test)]
+    if let Some(url) = test_integration_base_url().lock().unwrap().clone() {
+        return url;
+    }
+
+    DEFAULT_INTEGRATION_BASE_URL.to_string()
+}
+
+fn integration_url(path: &str) -> String {
+    format!("{}{}", integration_base_url().trim_end_matches('/'), path)
+}
+
+#[cfg(test)]
+pub(crate) struct TestIntegrationBaseUrlGuard(Option<String>);
+
+#[cfg(test)]
+impl Drop for TestIntegrationBaseUrlGuard {
+    fn drop(&mut self) {
+        *test_integration_base_url().lock().unwrap() = self.0.take();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn override_integration_base_url(url: impl Into<String>) -> TestIntegrationBaseUrlGuard {
+    let mut current = test_integration_base_url().lock().unwrap();
+    TestIntegrationBaseUrlGuard(current.replace(url.into()))
+}
 
 macro_rules! dev_log {
     ($($arg:tt)*) => {
@@ -661,10 +699,10 @@ fn compute_order_trace_id(body: &[u8]) -> Result<String, Box<dyn Error>> {
 // --- Units ---
 
 pub async fn fetch_units() -> Result<Vec<Unit>, Box<dyn Error>> {
-    let url = "https://integracao.cardapioweb.com/api/menu/users/drpizza";
+    let url = integration_url("/api/menu/users/drpizza");
     dev_log!("GET {}", url);
 
-    let response = reqwest::get(url).await?;
+    let response = reqwest::get(&url).await?;
     dev_log!("Status: {}", response.status());
 
     let menu_data: GroupResponse = response.json().await?;
@@ -675,7 +713,8 @@ pub async fn fetch_units() -> Result<Vec<Unit>, Box<dyn Error>> {
 // --- Menu ---
 
 pub async fn fetch_menu(ctx: &ApiContext) -> Result<Vec<MenuCategory>, Box<dyn Error>> {
-    let url = "https://integracao.cardapioweb.com/api/menu/company/categories?only_available_for=delivery&origin=catalogo";
+    let url =
+        integration_url("/api/menu/company/categories?only_available_for=delivery&origin=catalogo");
     dev_log!("GET {}", url);
     dev_log!(
         "Headers: company-id={}, company={}, sessionid={}",
@@ -685,7 +724,7 @@ pub async fn fetch_menu(ctx: &ApiContext) -> Result<Vec<MenuCategory>, Box<dyn E
     );
     dev_log_curl::<serde_json::Value>(
         "GET",
-        url,
+        &url,
         &[
             ("company-id", ctx.company_id.to_string()),
             ("company", ctx.company_slug.clone()),
@@ -696,7 +735,7 @@ pub async fn fetch_menu(ctx: &ApiContext) -> Result<Vec<MenuCategory>, Box<dyn E
 
     let client = reqwest::Client::new();
     let res = client
-        .get(url)
+        .get(&url)
         .header("company-id", ctx.company_id.to_string())
         .header("company", &ctx.company_slug)
         .header("sessionid", &ctx.session_id)
@@ -742,7 +781,7 @@ pub async fn register_client(
     name: &str,
     phone: &str,
 ) -> Result<ClientResult, Box<dyn Error>> {
-    let url = "https://integracao.cardapioweb.com/api/menu/company/clients";
+    let url = integration_url("/api/menu/company/clients");
     let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
     dev_log!("POST {} name={} phone={}", url, name, digits);
 
@@ -752,7 +791,7 @@ pub async fn register_client(
     });
     dev_log_curl(
         "POST",
-        url,
+        &url,
         &[
             ("Accept", "application/json, text/plain, */*".to_string()),
             ("Content-Type", "application/json;charset=utf-8".to_string()),
@@ -765,7 +804,7 @@ pub async fn register_client(
 
     let client = reqwest::Client::new();
     let res = client
-        .post(url)
+        .post(&url)
         .header("Accept", "application/json, text/plain, */*")
         .header("Content-Type", "application/json;charset=utf-8")
         .header("company-id", ctx.company_id.to_string())
@@ -803,10 +842,10 @@ pub async fn find_client_by_phone(
     phone: &str,
 ) -> Result<ClientResult, Box<dyn Error>> {
     let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
-    let url = format!(
-        "https://integracao.cardapioweb.com/api/menu/company/clients?ddi=55&telephone={}",
+    let url = integration_url(&format!(
+        "/api/menu/company/clients?ddi=55&telephone={}",
         digits
-    );
+    ));
     dev_log!("GET {} (lookup by phone)", url);
 
     let client = reqwest::Client::new();
@@ -868,7 +907,7 @@ pub async fn login_client_session(
     client_id: u64,
     password: &str,
 ) -> Result<String, Box<dyn Error>> {
-    let url = "https://integracao.cardapioweb.com/api/menu/authentication/client_session/login";
+    let url = integration_url("/api/menu/authentication/client_session/login");
     dev_log!(
         "POST {} client_id={} company-id={} company={}",
         url,
@@ -885,7 +924,7 @@ pub async fn login_client_session(
     };
     dev_log_curl(
         "POST",
-        url,
+        &url,
         &[
             ("Accept", "application/json, text/plain, */*".to_string()),
             ("Content-Type", "application/json;charset=utf-8".to_string()),
@@ -898,7 +937,7 @@ pub async fn login_client_session(
 
     let client = reqwest::Client::new();
     let res = client
-        .post(url)
+        .post(&url)
         .header("Accept", "application/json, text/plain, */*")
         .header("Content-Type", "application/json;charset=utf-8")
         .header("company-id", ctx.company_id.to_string())
@@ -972,7 +1011,7 @@ pub async fn calculate_delivery_tax(
     state: &str,
     zip_code: &str,
 ) -> Result<DeliveryQuote, Box<dyn Error>> {
-    let url = "https://integracao.cardapioweb.com/api/menu/company/orders/calculate_tax";
+    let url = integration_url("/api/menu/company/orders/calculate_tax");
     let full_address = format!(
         "{}, {}, {}, {}, {}",
         street, number, neighborhood, city, state
@@ -995,7 +1034,7 @@ pub async fn calculate_delivery_tax(
     };
     dev_log_curl(
         "POST",
-        url,
+        &url,
         &[
             ("Accept", "application/json, text/plain, */*".to_string()),
             ("Content-Type", "application/json;charset=utf-8".to_string()),
@@ -1008,7 +1047,7 @@ pub async fn calculate_delivery_tax(
 
     let client = reqwest::Client::new();
     let res = client
-        .post(url)
+        .post(&url)
         .header("Accept", "application/json, text/plain, */*")
         .header("Content-Type", "application/json;charset=utf-8")
         .header("company-id", ctx.company_id.to_string())
@@ -1055,10 +1094,10 @@ pub async fn fetch_pending_orders(
     ctx: &ApiContext,
     client_id: u64,
 ) -> Result<Vec<PendingOrder>, Box<dyn Error>> {
-    let url = format!(
-        "https://integracao.cardapioweb.com/api/menu/company/client/{}/pending_orders",
+    let url = integration_url(&format!(
+        "/api/menu/company/client/{}/pending_orders",
         client_id
-    );
+    ));
     dev_log!("GET {}", url);
 
     let client = reqwest::Client::new();
@@ -1093,10 +1132,10 @@ pub async fn fetch_closed_orders(
     limit: u32,
     auth_token: Option<&str>,
 ) -> Result<Vec<PendingOrder>, Box<dyn Error>> {
-    let url = format!(
-        "https://integracao.cardapioweb.com/api/menu/company/client/{}/closed_orders?limit={}",
+    let url = integration_url(&format!(
+        "/api/menu/company/client/{}/closed_orders?limit={}",
         client_id, limit
-    );
+    ));
     dev_log!("GET {}", url);
 
     let client = reqwest::Client::new();
@@ -1133,10 +1172,7 @@ pub async fn fetch_order_detail(
     ctx: &ApiContext,
     order_uid: &str,
 ) -> Result<OrderDetail, Box<dyn Error>> {
-    let url = format!(
-        "https://integracao.cardapioweb.com/api/menu/company/orders/{}",
-        order_uid
-    );
+    let url = integration_url(&format!("/api/menu/company/orders/{}", order_uid));
     dev_log!("GET {}", url);
 
     let client = reqwest::Client::new();
@@ -1169,7 +1205,7 @@ pub async fn submit_order(
     payload: &OrderPayload,
     _auth_token: Option<&str>,
 ) -> Result<OrderResponse, Box<dyn Error>> {
-    let url = "https://integracao.cardapioweb.com/api/menu/company/orders/new_version";
+    let url = integration_url("/api/menu/company/orders/new_version");
     let encoded_body = serialize_order_payload_legacy(payload)?;
     let trace_id = compute_order_trace_id(&encoded_body)?;
     dev_log!("POST {}", url);
@@ -1200,11 +1236,11 @@ pub async fn submit_order(
         ("Sec-Fetch-Site", "same-site".to_string()),
     ];
 
-    dev_log_curl_bytes("POST", url, &debug_headers, Some(&encoded_body));
+    dev_log_curl_bytes("POST", &url, &debug_headers, Some(&encoded_body));
 
     let client = reqwest::Client::new();
     let req = client
-        .post(url)
+        .post(&url)
         .header("Accept", "application/json, text/plain, */*")
         .header("Accept-Language", "en-US,en;q=0.9")
         .header("Content-Type", "application/json;charset=utf-8")
@@ -1261,14 +1297,234 @@ pub async fn submit_order(
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_order_trace_id, serialize_order_payload_legacy};
+    use super::{
+        calculate_delivery_tax, compute_order_trace_id, fetch_closed_orders, fetch_order_detail,
+        fetch_pending_orders, fetch_units, override_integration_base_url, register_client,
+        serialize_order_payload_legacy, submit_order, ApiContext,
+    };
     use crate::models::{
         OrderAddressPayload, OrderClientPayload, OrderItemPayload, OrderPayload,
         PaymentBrandPayload, PaymentValuePayload,
     };
+    use serde_json::{json, Value};
+    use serial_test::serial;
+    use std::str;
+    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
 
     fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
         haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    fn sample_ctx() -> ApiContext {
+        ApiContext {
+            company_id: 7842,
+            company_slug: "dr_pizza__malvinas".to_string(),
+            session_id: "testsession".to_string(),
+        }
+    }
+
+    fn sample_order_payload() -> OrderPayload {
+        OrderPayload {
+            final_value: "47.90".to_string(),
+            delivery_fee: 8.0,
+            delivery_man_fee: None,
+            additional_fee: None,
+            estimated_time: 80,
+            custom_fields_data: "[]".to_string(),
+            company_id: 7842,
+            confirmation: false,
+            order_type: "delivery".to_string(),
+            payment_values_attributes: vec![PaymentValuePayload {
+                id: Some(44164),
+                name: "Pix automático".to_string(),
+                fixed_fee: None,
+                percentual_fee: None,
+                available_on_menu: true,
+                available_for: vec![],
+                available_order_timings: vec![],
+                allow_on_customer_first_order: true,
+                online_payment_provider: None,
+                kind: "pix_auto".to_string(),
+                brands: vec![PaymentBrandPayload {
+                    id: Some(49068),
+                    name: None,
+                    kind: None,
+                    image_key: None,
+                    system_default: true,
+                }],
+                payment_method_id: Some(44164),
+                payment_method: "pix_auto".to_string(),
+                payment_method_brand_id: Some(49068),
+                payment_fee: None,
+                total: 47.9,
+            }],
+            scheduled_date: None,
+            scheduled_period: None,
+            earned_points: 39,
+            sales_channel: "catalog".to_string(),
+            customer_origin: None,
+            diswpp_message_id: None,
+            invoice_document: None,
+            client_id: 60319762,
+            client: OrderClientPayload {
+                name: "Raisson Souto".to_string(),
+                ddi: 55,
+                telephone: "83998498006".to_string(),
+            },
+            delivery_address: OrderAddressPayload {
+                street: "Rua Pedro Feitosa Neves".to_string(),
+                neighborhood: "Bela Vista".to_string(),
+                address_complement: "506A".to_string(),
+                house_number: "465".to_string(),
+                city: "Campina Grande".to_string(),
+                state: "PB".to_string(),
+                landmark: "residencial bellagio por trás do ct da raposa".to_string(),
+                latitude: None,
+                longitude: None,
+                zip_code: "58428757".to_string(),
+            },
+            benefits: vec![],
+            order_items: vec![OrderItemPayload {
+                item_id: 4013811,
+                kind: "regular_item".to_string(),
+                name: "6 ANOS DR PIZZA - Escolha até 2 Sabores".to_string(),
+                custom_code: Some("23097221".to_string()),
+                category_id: 470669,
+                category_name: "6 ANOS DO DOUTOR".to_string(),
+                quantity: 1,
+                observation: String::new(),
+                unit_price: 39.9,
+                price: 39.9,
+                price_without_discounts: 75.9,
+                print_area_id: Some(16062),
+                second_print_area_id: None,
+                order_subitems_attributes: vec![],
+            }],
+        }
+    }
+
+    fn sample_order_detail_json() -> Value {
+        json!({
+            "id": 210230022u64,
+            "uid": "5blw4hmo6",
+            "order_number": 17876u64,
+            "status": "pending_online_payment",
+            "order_type": "delivery",
+            "delivery_fee": 8.0,
+            "final_value": 47.9,
+            "earned_points": 39u64,
+            "observation": null,
+            "created_at": "2026-04-24T20:39:24.350-03:00",
+            "order_items": [
+                {
+                    "name": "6 ANOS DR PIZZA - Escolha até 2 Sabores",
+                    "quantity": 1.0,
+                    "price": 39.9,
+                    "unit_price": 39.9,
+                    "order_subitems": [
+                        {
+                            "name": "Borda tradicional",
+                            "price": 0.0,
+                            "add_on_name": "Bordas"
+                        }
+                    ]
+                }
+            ],
+            "delivery_address": {
+                "street": "Rua Pedro Feitosa Neves",
+                "house_number": "465",
+                "neighborhood": "Bela Vista",
+                "city": "Campina Grande",
+                "state": "PB",
+                "zip_code": "58428757",
+                "landmark": "residencial bellagio",
+                "address_complement": "506A"
+            },
+            "payment_values": [
+                {
+                    "total": 47.9,
+                    "payment_type": "online",
+                    "payment_method": "pix_auto",
+                    "status": "pending",
+                    "pix_qr_image": "https://example.test/pix.png",
+                    "pix_qr_copy_paste": "000201..."
+                }
+            ],
+            "status_changes": [
+                {
+                    "id": 1u64,
+                    "status": "created",
+                    "created_at": "2026-04-24T20:39:25.350-03:00",
+                    "user_name": null
+                }
+            ],
+            "client": {
+                "id": 60319762u64,
+                "name": "Raisson Souto",
+                "telephone": "83998498006"
+            }
+        })
+    }
+
+    fn first_header<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+        request
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+    }
+
+    struct SubmitOrderMatcher;
+
+    impl Match for SubmitOrderMatcher {
+        fn matches(&self, request: &Request) -> bool {
+            if first_header(request, "company-id") != Some("7842") {
+                return false;
+            }
+            if first_header(request, "company") != Some("dr_pizza__malvinas") {
+                return false;
+            }
+            if first_header(request, "sessionid") != Some("testsession") {
+                return false;
+            }
+            if request.headers.contains_key("authorization") {
+                return false;
+            }
+
+            let Some(actual_trace_id) = first_header(request, "trace-id") else {
+                return false;
+            };
+            let Ok(expected_trace_id) = compute_order_trace_id(&request.body) else {
+                return false;
+            };
+            if actual_trace_id != expected_trace_id {
+                return false;
+            }
+
+            let Ok(body_text) = str::from_utf8(&request.body) else {
+                return false;
+            };
+            if !body_text.contains("Pix automático") {
+                return false;
+            }
+            if request.body.contains(&0xe1) {
+                return false;
+            }
+
+            let Ok(body_json) = serde_json::from_slice::<Value>(&request.body) else {
+                return false;
+            };
+
+            body_json["final_value"].as_str() == Some("47.90")
+                && body_json["delivery_fee"].as_i64() == Some(8)
+                && body_json["payment_values_attributes"][0]["payment_method"].as_str()
+                    == Some("pix_auto")
+                && body_json["payment_values_attributes"][0]["payment_method_id"].as_u64()
+                    == Some(44164)
+                && body_json["payment_values_attributes"][0]["payment_method_brand_id"].as_u64()
+                    == Some(49068)
+                && body_json["order_items"][0]["price_without_discounts"].as_f64() == Some(75.9)
+        }
     }
 
     #[test]
@@ -1369,5 +1625,208 @@ mod tests {
         let body = br#"{"a":1}"#;
         let trace_id = compute_order_trace_id(body).expect("compute trace id");
         assert_eq!(trace_id, "817d70cb11ee2367");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn fetch_units_reads_units_from_mock_server() {
+        let server = MockServer::start().await;
+        let _guard = override_integration_base_url(server.uri());
+
+        Mock::given(method("GET"))
+            .and(path("/api/menu/users/drpizza"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 24379,
+                "group_name": "Dr Pizza",
+                "companies": [
+                    {
+                        "id": 7842,
+                        "uuid": "0f841c3a-be06-4112-a61c-67791693522a",
+                        "name": "Dr Pizza - Malvinas"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let units = fetch_units().await.expect("fetch units");
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].id, 7842);
+        assert_eq!(units[0].name, "Dr Pizza - Malvinas");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn register_client_falls_back_to_lookup_when_phone_is_already_registered() {
+        let server = MockServer::start().await;
+        let _guard = override_integration_base_url(server.uri());
+        let ctx = sample_ctx();
+
+        Mock::given(method("POST"))
+            .and(path("/api/menu/company/clients"))
+            .respond_with(ResponseTemplate::new(422).set_body_string("telefone já cadastrado"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/menu/company/clients"))
+            .and(query_param("ddi", "55"))
+            .and(query_param("telephone", "83998498006"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "client": { "id": 60319762u64 },
+                "token": "existing-token"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = register_client(&ctx, "Raisson Souto", "83998498006")
+            .await
+            .expect("register client");
+
+        assert_eq!(result.client_id, 60319762);
+        assert_eq!(result.token.as_deref(), Some("existing-token"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn calculate_delivery_tax_parses_value_and_estimated_time() {
+        let server = MockServer::start().await;
+        let _guard = override_integration_base_url(server.uri());
+        let ctx = sample_ctx();
+
+        Mock::given(method("POST"))
+            .and(path("/api/menu/company/orders/calculate_tax"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": "8.0",
+                "estimated_time": 30
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let quote = calculate_delivery_tax(
+            &ctx,
+            "Rua Pedro Feitosa Neves",
+            "465",
+            "Bela Vista",
+            "Campina Grande",
+            "PB",
+            "58428757",
+        )
+        .await
+        .expect("calculate delivery tax");
+
+        assert_eq!(quote.value, 8.0);
+        assert_eq!(quote.estimated_time, Some(30));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn submit_order_posts_browser_compatible_payload() {
+        let server = MockServer::start().await;
+        let _guard = override_integration_base_url(server.uri());
+        let ctx = sample_ctx();
+        let payload = sample_order_payload();
+
+        Mock::given(method("POST"))
+            .and(path("/api/menu/company/orders/new_version"))
+            .and(header("company-id", "7842"))
+            .and(header("company", "dr_pizza__malvinas"))
+            .and(header("sessionid", "testsession"))
+            .and(SubmitOrderMatcher)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 210230022u64,
+                "uid": "5blw4hmo6",
+                "order_number": 17876u64,
+                "status": "pending_online_payment"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let response = submit_order(&ctx, &payload, None)
+            .await
+            .expect("submit order");
+
+        assert_eq!(response.order_number, 17876);
+        assert_eq!(response.status, "pending_online_payment");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn fetch_order_lists_and_detail_from_mock_server() {
+        let server = MockServer::start().await;
+        let _guard = override_integration_base_url(server.uri());
+        let ctx = sample_ctx();
+
+        Mock::given(method("GET"))
+            .and(path("/api/menu/company/client/60319762/pending_orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 1u64,
+                    "order_number": 17876u64,
+                    "status": "pending_online_payment",
+                    "order_type": "delivery",
+                    "final_value": 47.9,
+                    "uid": "5blw4hmo6",
+                    "created_at": "2026-04-24T20:39:24.350-03:00",
+                    "updated_at": null,
+                    "status_changes": []
+                }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/menu/company/client/60319762/closed_orders"))
+            .and(query_param("limit", "10"))
+            .and(header("authorization", "fresh-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 2u64,
+                    "order_number": 17540u64,
+                    "status": "closed",
+                    "order_type": "delivery",
+                    "final_value": 62.9,
+                    "uid": "old-order",
+                    "created_at": "2026-04-14T20:39:24.350-03:00",
+                    "updated_at": null,
+                    "status_changes": []
+                }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/menu/company/orders/5blw4hmo6"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_order_detail_json()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pending = fetch_pending_orders(&ctx, 60319762)
+            .await
+            .expect("fetch pending orders");
+        let closed = fetch_closed_orders(&ctx, 60319762, 10, Some("fresh-token"))
+            .await
+            .expect("fetch closed orders");
+        let detail = fetch_order_detail(&ctx, "5blw4hmo6")
+            .await
+            .expect("fetch order detail");
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].order_number, 17876);
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].order_number, 17540);
+        assert_eq!(detail.order_number, 17876);
+        assert_eq!(
+            detail.payment_values[0].pix_qr_copy_paste.as_deref(),
+            Some("000201...")
+        );
     }
 }

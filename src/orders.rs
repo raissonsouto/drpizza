@@ -428,3 +428,131 @@ fn print_order_detail(detail: &crate::models::OrderDetail) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{fetch_all_orders, format_date_br, is_not_found_no_records};
+    use crate::api::{override_integration_base_url, ApiContext};
+    use crate::config::AppOptions;
+    use serde_json::json;
+    use serial_test::serial;
+    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn sample_ctx() -> ApiContext {
+        ApiContext {
+            company_id: 7842,
+            company_slug: "dr_pizza__malvinas".to_string(),
+            session_id: "testsession".to_string(),
+        }
+    }
+
+    fn stateless_opts() -> AppOptions {
+        AppOptions {
+            stateless: true,
+            no_cache: false,
+            unit_id: None,
+        }
+    }
+
+    #[test]
+    fn detects_not_found_messages_without_treating_them_as_fatal() {
+        assert!(is_not_found_no_records("Registro não encontrado"));
+        assert!(is_not_found_no_records("404 not found"));
+        assert!(!is_not_found_no_records("token expirado"));
+    }
+
+    #[test]
+    fn formats_iso_date_to_brazilian_format() {
+        assert_eq!(
+            format_date_br("2026-04-24T20:39:24.350-03:00"),
+            "24/04/2026"
+        );
+        assert_eq!(format_date_br("2026-04-24"), "24/04/2026");
+        assert_eq!(format_date_br("invalid"), "invalid");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn fetch_all_orders_refreshes_expired_token_and_merges_results() {
+        let server = MockServer::start().await;
+        let _guard = override_integration_base_url(server.uri());
+        let ctx = sample_ctx();
+        let opts = stateless_opts();
+
+        Mock::given(method("GET"))
+            .and(path("/api/menu/company/client/60319762/pending_orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 1u64,
+                    "order_number": 17876u64,
+                    "status": "pending_online_payment",
+                    "order_type": "delivery",
+                    "final_value": 47.9,
+                    "uid": "pending-order",
+                    "created_at": "2026-04-24T20:39:24.350-03:00",
+                    "updated_at": null,
+                    "status_changes": []
+                }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/menu/company/client/60319762/closed_orders"))
+            .and(query_param("limit", "10"))
+            .and(header("authorization", "expired-token"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(json!({ "message": "token expirado" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/menu/authentication/client_session/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "token": "fresh-token"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/menu/company/client/60319762/closed_orders"))
+            .and(query_param("limit", "10"))
+            .and(header("authorization", "fresh-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 2u64,
+                    "order_number": 17540u64,
+                    "status": "closed",
+                    "order_type": "delivery",
+                    "final_value": 62.9,
+                    "uid": "closed-order",
+                    "created_at": "2026-04-14T20:39:24.350-03:00",
+                    "updated_at": null,
+                    "status_changes": []
+                }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = fetch_all_orders(
+            &ctx,
+            &opts,
+            60319762,
+            10,
+            Some("expired-token"),
+            Some("secret"),
+        )
+        .await;
+
+        assert!(!result.had_error);
+        assert_eq!(result.orders.len(), 2);
+        assert_eq!(result.orders[0].order_number, 17876);
+        assert_eq!(result.orders[1].order_number, 17540);
+    }
+}
