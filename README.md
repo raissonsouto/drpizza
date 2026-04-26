@@ -27,6 +27,7 @@ Binário gerado em `target/release/drpizza`.
 - `unidades`: lista unidades e detalhes
 - `status`: mostra último pedido (`pedido` funciona como alias)
 - `pedidos`: mostra histórico
+- `pontos`: mostra pontos acumulados e benefícios de fidelidade
 - `perfil`: visualiza/edita perfil local
 - `enderecos`: gerencia endereços salvos
 

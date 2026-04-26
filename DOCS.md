@@ -111,6 +111,22 @@ drpizza pedidos
 drpizza pedidos -u 0
 ```
 
+### `pontos`
+
+Mostra os pontos acumulados com base no histórico de pedidos e lista benefícios de fidelidade.
+
+Exemplos:
+
+```bash
+drpizza pontos
+drpizza pontos -u 0
+```
+
+Observações:
+
+- Exibe total de pontos acumulados (`earned_points`) somados a partir dos detalhes dos pedidos.
+- Mostra benefícios ativos e se já estão disponíveis ou quantos pontos faltam.
+
 ### `perfil`
 
 Mostra/edita perfil local.

@@ -6,6 +6,7 @@ mod menu;
 mod models;
 mod order;
 mod orders;
+mod points;
 mod profile;
 mod ui;
 mod units;

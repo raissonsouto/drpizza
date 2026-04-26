@@ -5,6 +5,7 @@ use crate::config::AppOptions;
 use crate::menu;
 use crate::order;
 use crate::orders;
+use crate::points;
 use crate::profile;
 use crate::units;
 
@@ -74,6 +75,8 @@ enum Commands {
     Status,
     /// Lista histórico de pedidos
     Pedidos,
+    /// Mostra pontos acumulados e benefícios de fidelidade
+    Pontos,
     /// Gerencia o perfil local (nome, telefone)
     Perfil {
         /// Editar perfil interativamente
@@ -136,6 +139,9 @@ pub async fn run() {
         }
         Some(Commands::Pedidos) => {
             orders::show_order_history(&base_opts(false, false)).await;
+        }
+        Some(Commands::Pontos) => {
+            points::show_points(&base_opts(false, false)).await;
         }
         Some(Commands::Perfil { edit }) => {
             profile::show_profile(&base_opts(false, false), edit).await;

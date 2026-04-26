@@ -5,9 +5,9 @@ use crate::units;
 use colored::*;
 use std::env;
 
-struct FetchOrdersResult {
-    orders: Vec<crate::models::PendingOrder>,
-    had_error: bool,
+pub(crate) struct FetchOrdersResult {
+    pub(crate) orders: Vec<crate::models::PendingOrder>,
+    pub(crate) had_error: bool,
 }
 
 fn is_not_found_no_records(err: &str) -> bool {
@@ -169,7 +169,7 @@ pub async fn show_order_history(opts: &AppOptions) {
     }
 }
 
-async fn fetch_all_orders(
+pub(crate) async fn fetch_all_orders(
     ctx: &api::ApiContext,
     opts: &AppOptions,
     client_id: u64,
@@ -253,7 +253,7 @@ async fn fetch_all_orders(
     }
 }
 
-fn get_client_info(opts: &AppOptions) -> Option<(u64, Option<String>, Option<String>)> {
+pub(crate) fn get_client_info(opts: &AppOptions) -> Option<(u64, Option<String>, Option<String>)> {
     if opts.stateless {
         println!(
             "{}",
