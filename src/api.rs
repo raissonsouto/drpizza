@@ -162,6 +162,14 @@ pub struct ApiContext {
 }
 
 impl ApiContext {
+    pub fn new(company_id: u32, company_slug: String) -> Self {
+        ApiContext {
+            company_id,
+            company_slug,
+            session_id: generate_session_id(),
+        }
+    }
+
     pub fn from_unit(unit: &Unit) -> Self {
         let slug = unit.url_name.clone().unwrap_or_default();
         let session_id = generate_session_id();
@@ -478,6 +486,12 @@ fn serialize_order_subitem_payload(out: &mut Vec<u8>, subitem: &OrderSubItemPayl
     append_separator(out, &mut first);
     append_json_key(out, "total_price");
     append_json_f64(out, subitem.total_price);
+
+    if let Some(count) = subitem.add_on_selected_subitems_count {
+        append_separator(out, &mut first);
+        append_json_key(out, "add_on_selected_subitems_count");
+        append_json_u32(out, count);
+    }
 
     append_separator(out, &mut first);
     append_json_key(out, "name");

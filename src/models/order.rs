@@ -73,6 +73,29 @@ pub struct PaymentValue {
     pub status: Option<String>,
     pub pix_qr_image: Option<String>,
     pub pix_qr_copy_paste: Option<String>,
+    /// PIX payment deadline (ISO 8601); the order is auto-cancelled after it.
+    #[serde(default)]
+    pub pix_expires_at: Option<String>,
+}
+
+impl PaymentValue {
+    /// One-line PIX deadline for display, or `None` when the API sent none.
+    pub fn pix_deadline_line(&self, now: chrono::DateTime<chrono::Local>) -> Option<String> {
+        let raw = self.pix_expires_at.as_deref()?.trim();
+        let deadline = chrono::DateTime::parse_from_rfc3339(raw)
+            .ok()?
+            .with_timezone(&chrono::Local);
+        let remaining = deadline.signed_duration_since(now).num_minutes();
+        Some(if remaining < 0 {
+            "⌛ Prazo do PIX expirou".to_string()
+        } else {
+            format!(
+                "⏳ Pague até {} ({} min) — depois disso o pedido é cancelado automaticamente.",
+                deadline.format("%H:%M"),
+                remaining
+            )
+        })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -165,6 +188,7 @@ pub struct OrderSubItemPayload {
     pub quantity: u32,
     pub price: f64,
     pub total_price: f64,
+    pub add_on_selected_subitems_count: Option<u32>,
     pub name: String,
     pub custom_code: Option<String>,
     pub add_on_id: u32,

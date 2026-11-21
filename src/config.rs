@@ -71,26 +71,9 @@ pub async fn get_menu_data(ctx: &api::ApiContext, opts: &AppOptions) -> Vec<Menu
         }
     }
 
-    // Fetch from API
-    let sp = ui::Spinner::new("Carregando cardápio...");
-    match api::fetch_menu(ctx).await {
-        Ok(categories) => {
-            sp.stop();
-            // Write cache (skip if stateless)
-            if !opts.stateless {
-                let cache = MenuCache {
-                    fetched_at: Utc::now().to_rfc3339(),
-                    company_slug: ctx.company_slug.clone(),
-                    categories: categories.clone(),
-                };
-                if let Ok(json) = serde_json::to_string_pretty(&cache) {
-                    let _ = fs::write(&cache_file, json);
-                }
-            }
-            categories
-        }
+    match fetch_and_cache_menu(ctx, opts).await {
+        Ok(categories) => categories,
         Err(e) => {
-            drop(sp);
             eprintln!("Erro ao buscar cardápio da API: {}", e);
             // Fall back to stale cache (skip if stateless)
             if !opts.stateless {
@@ -103,6 +86,29 @@ pub async fn get_menu_data(ctx: &api::ApiContext, opts: &AppOptions) -> Vec<Menu
             Vec::new()
         }
     }
+}
+
+/// Fetches the live menu (no stale fallback) and refreshes the cache.
+/// Ordering must use this: stale prices/windows make the API reject the order.
+pub async fn fetch_and_cache_menu(
+    ctx: &api::ApiContext,
+    opts: &AppOptions,
+) -> Result<Vec<MenuCategory>, Box<dyn std::error::Error>> {
+    let sp = ui::Spinner::new("Carregando cardápio...");
+    let result = api::fetch_menu(ctx).await;
+    sp.stop();
+    let categories = result?;
+    if !opts.stateless {
+        let cache = MenuCache {
+            fetched_at: Utc::now().to_rfc3339(),
+            company_slug: ctx.company_slug.clone(),
+            categories: categories.clone(),
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&cache) {
+            let _ = fs::write(menu_cache_path(), json);
+        }
+    }
+    Ok(categories)
 }
 
 // --- Loyalty ---

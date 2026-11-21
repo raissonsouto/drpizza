@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod menu;
 mod models;
+mod notify;
 mod order;
 mod orders;
 mod points;

@@ -1,8 +1,10 @@
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::addresses;
+use crate::api;
 use crate::config::AppOptions;
 use crate::menu;
+use crate::notify;
 use crate::order;
 use crate::orders;
 use crate::points;
@@ -72,7 +74,20 @@ enum Commands {
     },
     /// Mostra status do último pedido
     #[command(name = "status", alias = "pedido")]
-    Status,
+    Status {
+        /// Acompanha o pedido e avisa a cada mudança de status
+        #[arg(short = 'w', long = "watch")]
+        watch: bool,
+    },
+    /// Watcher interno de notificações (iniciado pelo `pedir`)
+    #[command(name = notify::WATCH_SUBCOMMAND, hide = true)]
+    Watch {
+        order_uid: String,
+        order_number: u64,
+        company_id: u32,
+        company_slug: String,
+        status: String,
+    },
     /// Lista histórico de pedidos
     Pedidos,
     /// Cancela um pedido pendente
@@ -148,8 +163,18 @@ pub async fn run() {
         }) => {
             units::list_units(&base_opts(false, false), all, detalhes, default, no_default).await;
         }
-        Some(Commands::Status) => {
-            orders::show_last_order(&base_opts(false, false)).await;
+        Some(Commands::Status { watch }) => {
+            orders::show_last_order(&base_opts(false, false), watch).await;
+        }
+        Some(Commands::Watch {
+            order_uid,
+            order_number,
+            company_id,
+            company_slug,
+            status,
+        }) => {
+            let ctx = api::ApiContext::new(company_id, company_slug);
+            notify::watch_order(&ctx, &order_uid, order_number, &status, true, false).await;
         }
         Some(Commands::Pedidos) => {
             orders::show_order_history(&base_opts(false, false)).await;

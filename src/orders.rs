@@ -1,5 +1,6 @@
 use crate::api;
 use crate::config::{self, AppOptions};
+use crate::notify;
 use crate::ui;
 use crate::units;
 use colored::*;
@@ -16,7 +17,7 @@ fn is_not_found_no_records(err: &str) -> bool {
         || lower.contains("404")
 }
 
-pub async fn show_last_order(opts: &AppOptions) {
+pub async fn show_last_order(opts: &AppOptions, watch: bool) {
     let (client_id, auth_token, auth_password) = match get_client_info(opts) {
         Some(info) => info,
         None => return,
@@ -57,6 +58,10 @@ pub async fn show_last_order(opts: &AppOptions) {
         Ok(detail) => {
             sp2.stop();
             print_order_detail(&detail);
+            if watch {
+                watch_in_foreground(opts, &ctx, &detail.uid, detail.order_number, &detail.status)
+                    .await;
+            }
         }
         Err(e) => {
             drop(sp2);
@@ -446,6 +451,32 @@ pub(crate) fn get_client_info(opts: &AppOptions) -> Option<(u64, Option<String>,
     }
 }
 
+async fn watch_in_foreground(
+    opts: &AppOptions,
+    ctx: &api::ApiContext,
+    order_uid: &str,
+    order_number: u64,
+    status: &str,
+) {
+    if matches!(status, "concluded" | "closed" | "cancelled") {
+        println!("\nPedido já finalizado; nada para acompanhar.");
+        return;
+    }
+    let notifications =
+        config::load_user_config(opts).map_or(true, |cfg| cfg.notifications_enabled());
+    println!(
+        "\n{} {}",
+        "👀 Acompanhando pedido (Ctrl+C para sair).".cyan(),
+        if notifications {
+            "Notificações ativas."
+        } else {
+            "Notificações desativadas no perfil."
+        }
+        .bright_black()
+    );
+    notify::watch_order(ctx, order_uid, order_number, status, notifications, true).await;
+}
+
 fn save_auth_token(opts: &AppOptions, token: &str) {
     if opts.stateless {
         return;
@@ -553,6 +584,11 @@ fn print_order_detail(detail: &crate::models::OrderDetail) {
                 method,
                 status
             );
+            if detail.status == "pending_online_payment" {
+                if let Some(deadline) = pv.pix_deadline_line(chrono::Local::now()) {
+                    println!("      {}", deadline.yellow());
+                }
+            }
             if let Some(qr_image) = pv.pix_qr_image.as_deref() {
                 if !qr_image.is_empty() {
                     println!("      QR Code: {}", qr_image);

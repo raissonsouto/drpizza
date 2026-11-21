@@ -37,6 +37,15 @@ pub struct UserConfig {
     pub endereco_padrao: Option<usize>,
     #[serde(default)]
     pub nao_perguntar_unidade: bool,
+    /// Desktop notifications on order status changes; `None` means enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notificacoes: Option<bool>,
+}
+
+impl UserConfig {
+    pub fn notifications_enabled(&self) -> bool {
+        self.notificacoes.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

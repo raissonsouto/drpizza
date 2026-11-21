@@ -2,25 +2,34 @@ use crate::api;
 use crate::config::{self, AppOptions};
 use crate::menu;
 use crate::models::{
-    CartItem, MenuSelection, OrderAddressPayload, OrderClientPayload, OrderItemPayload,
-    OrderPayload, OrderSubItemPayload, PaymentBrandPayload, PaymentMethod, PaymentValuePayload,
-    SavedAddress, Unit, UserConfig,
+    available_menu_at, CartItem, MenuCategory, MenuItem, MenuSelection, OrderAddressPayload,
+    OrderClientPayload, OrderItemPayload, OrderPayload, OrderSubItemPayload, PaymentBrandPayload,
+    PaymentMethod, PaymentValuePayload, SavedAddress, SubItem, Unit, UserConfig,
 };
+use crate::notify;
 use crate::ui;
 use crate::units;
 use colored::*;
 use qrcode::render::unicode;
 use qrcode::QrCode;
-use std::collections::HashMap;
 
 pub async fn start_order_flow(opts: &AppOptions) {
     let (selected_unit, ctx) = units::select_unit_and_context(opts).await;
-    let fresh_opts = AppOptions {
-        stateless: opts.stateless,
-        no_cache: true,
-        unit_id: opts.unit_id,
+    let full_menu = match config::fetch_and_cache_menu(&ctx, opts).await {
+        Ok(menu) => menu,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                format!(
+                    "Não foi possível carregar o cardápio atualizado: {}\nO pedido não pode ser feito com preços desatualizados. Tente novamente mais tarde.",
+                    e
+                )
+                .red()
+            );
+            return;
+        }
     };
-    let menu_data = config::get_menu_data(&ctx, &fresh_opts).await;
+    let menu_data = available_menu_at(&full_menu, now_local());
 
     if menu_data.is_empty() {
         println!("{}", "O cardápio está vazio. Verifique a conexão.".red());
@@ -36,40 +45,14 @@ pub async fn start_order_flow(opts: &AppOptions) {
     while ordering {
         match menu::browse_menu_select(&menu_data) {
             Some(sel) => {
-                let item_price = calculate_selection_price(&sel);
-                let flavor_names: Vec<String> =
-                    sel.flavors.iter().map(|f| f.name.clone()).collect();
-                let flavor_ids: Vec<u32> = sel.flavors.iter().map(|f| f.id).collect();
-                let crust_name = sel
-                    .crust
-                    .as_ref()
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| "Tradicional".to_string());
-                let crust_id = sel.crust.as_ref().map(|c| c.id);
-                let extras = sel.extras.clone();
+                let item = selection_to_cart_item(sel);
+                total_price += item.price;
 
-                cart.push(CartItem {
-                    item_id: sel.item.id,
-                    name: sel.item.name.clone(),
-                    custom_code: sel.item.custom_code.clone(),
-                    print_area_id: sel.item.print_area_id,
-                    second_print_area_id: sel.item.second_print_area_id,
-                    category_id: sel.category_id,
-                    category_name: sel.category_name.clone(),
-                    flavors: flavor_names.clone(),
-                    flavor_ids,
-                    crust: crust_name.clone(),
-                    crust_id,
-                    extras,
-                    price: item_price,
-                    price_without_discounts: calculate_selection_price_without_discounts(&sel),
-                });
-                total_price += item_price;
-
-                let mut desc = sel.item.name.green().to_string();
-                if !flavor_names.is_empty() {
-                    desc.push_str(&format!(" ({})", flavor_names.join(", ")));
+                let mut desc = item.name.green().to_string();
+                if !item.flavors.is_empty() {
+                    desc.push_str(&format!(" ({})", item.flavors.join(", ")));
                 }
+                cart.push(item);
                 println!(
                     "{} adicionado! 🛒 Subtotal: {}",
                     desc,
@@ -271,6 +254,29 @@ pub async fn start_order_flow(opts: &AppOptions) {
             ui::read_input("[C] Confirmar pedido / [E] Editar opções / [X] Cancelar compra: ");
         match action.trim().to_uppercase().as_str() {
             "C" | "" => {
+                let price_notices = refresh_cart_prices(&mut cart, &full_menu, now_local());
+                if !price_notices.is_empty() {
+                    println!(
+                        "\n{}",
+                        "⚠️  O cardápio mudou desde que você montou o pedido:"
+                            .yellow()
+                            .bold()
+                    );
+                    for notice in &price_notices {
+                        println!("  • {}", notice.yellow());
+                    }
+                    if cart.is_empty() {
+                        println!("{}", "Carrinho vazio. Compra cancelada.".yellow());
+                        return;
+                    }
+                    total_price = cart.iter().map(|i| i.price).sum::<f64>();
+                    grand_total = total_price + delivery_fee;
+                    println!(
+                        "{}",
+                        "Revise o resumo atualizado antes de confirmar.".yellow()
+                    );
+                    continue;
+                }
                 if let Some(min_value) = selected_unit.minimum_order_value {
                     if grand_total < min_value {
                         println!(
@@ -334,7 +340,8 @@ pub async fn start_order_flow(opts: &AppOptions) {
                         let pedido_edit = ui::read_input("Editar pedido: ");
                         match pedido_edit.trim() {
                             "1" => {
-                                if let Some(sel) = menu::browse_menu_select(&menu_data) {
+                                let current_menu = available_menu_at(&full_menu, now_local());
+                                if let Some(sel) = menu::browse_menu_select(&current_menu) {
                                     let item = selection_to_cart_item(sel);
                                     println!("{} adicionado!", item.name.clone().green().bold());
                                     cart.push(item);
@@ -418,87 +425,37 @@ pub async fn start_order_flow(opts: &AppOptions) {
     }
 
     // Build payload
-    let subitem_catalog = build_subitem_catalog(&menu_data);
-
-    let order_items: Vec<OrderItemPayload> = cart
-        .iter()
-        .map(|item| {
-            let mut subitems: Vec<OrderSubItemPayload> = Vec::new();
-            for &fid in &item.flavor_ids {
-                let (sub_name, sub_code, add_on_id, add_on_name) = subitem_catalog
-                    .get(&(item.item_id, fid))
-                    .cloned()
-                    .unwrap_or_else(|| ("".to_string(), None, 0, "".to_string()));
-                merge_subitem(
-                    &mut subitems,
-                    OrderSubItemPayload {
-                        subitem_id: fid,
-                        quantity: 1,
-                        price: 0.0,
-                        total_price: 0.0,
-                        name: sub_name,
-                        custom_code: sub_code,
-                        add_on_id,
-                        add_on_name,
-                    },
-                );
-            }
-            if let Some(cid) = item.crust_id {
-                let (sub_name, sub_code, add_on_id, add_on_name) = subitem_catalog
-                    .get(&(item.item_id, cid))
-                    .cloned()
-                    .unwrap_or_else(|| ("".to_string(), None, 0, "".to_string()));
-                merge_subitem(
-                    &mut subitems,
-                    OrderSubItemPayload {
-                        subitem_id: cid,
-                        quantity: 1,
-                        price: 0.0,
-                        total_price: 0.0,
-                        name: sub_name,
-                        custom_code: sub_code,
-                        add_on_id,
-                        add_on_name,
-                    },
-                );
-            }
-            for extra in &item.extras {
-                let (sub_name, sub_code, add_on_id, add_on_name) = subitem_catalog
-                    .get(&(item.item_id, extra.id))
-                    .cloned()
-                    .unwrap_or_else(|| (extra.name.clone(), None, 0, extra.add_on_name.clone()));
-                merge_subitem(
-                    &mut subitems,
-                    OrderSubItemPayload {
-                        subitem_id: extra.id,
-                        quantity: extra.quantity,
-                        price: extra.price,
-                        total_price: extra.price * extra.quantity as f64,
-                        name: sub_name,
-                        custom_code: sub_code,
-                        add_on_id,
-                        add_on_name,
-                    },
-                );
-            }
-            OrderItemPayload {
-                item_id: item.item_id,
-                kind: "regular_item".to_string(),
-                name: item.name.clone(),
-                custom_code: item.custom_code.clone(),
-                category_id: item.category_id,
-                category_name: item.category_name.clone(),
-                quantity: 1,
-                observation: observation.clone(),
-                unit_price: item.price,
-                price: item.price,
-                price_without_discounts: item.price_without_discounts,
-                print_area_id: item.print_area_id,
-                second_print_area_id: item.second_print_area_id,
-                order_subitems_attributes: subitems,
-            }
-        })
-        .collect();
+    let mut order_items: Vec<OrderItemPayload> = Vec::with_capacity(cart.len());
+    for item in &cart {
+        let Some(menu_item) = find_menu_item(&full_menu, item) else {
+            eprintln!(
+                "{}",
+                format!(
+                    "{} não está mais no cardápio. Pedido não enviado.",
+                    item.name
+                )
+                .red()
+            );
+            return;
+        };
+        let subitems = build_order_subitems(item, menu_item);
+        order_items.push(OrderItemPayload {
+            item_id: item.item_id,
+            kind: "regular_item".to_string(),
+            name: item.name.clone(),
+            custom_code: item.custom_code.clone(),
+            category_id: item.category_id,
+            category_name: item.category_name.clone(),
+            quantity: 1,
+            observation: observation.clone(),
+            unit_price: item.base_price,
+            price: item.price,
+            price_without_discounts: item.price_without_discounts,
+            print_area_id: item.print_area_id,
+            second_print_area_id: item.second_print_area_id,
+            order_subitems_attributes: subitems,
+        });
+    }
 
     let final_value = format!("{:.2}", grand_total);
     let clean_phone: String = customer_phone
@@ -588,6 +545,22 @@ pub async fn start_order_flow(opts: &AppOptions) {
                 match api::fetch_order_detail(&ctx, &order.uid).await {
                     Ok(detail) => print_pix_payment(&detail),
                     Err(e) => eprintln!("Não foi possível carregar os dados do PIX: {}", e),
+                }
+            }
+            let notifications_enabled =
+                config::load_user_config(opts).map_or(true, |cfg| cfg.notifications_enabled());
+            if notifications_enabled {
+                match notify::spawn_background_watcher(
+                    &ctx,
+                    &order.uid,
+                    order.order_number,
+                    &order.status,
+                ) {
+                    Ok(()) => println!(
+                        "🔔 Você será avisado a cada mudança de status (desative em: {})",
+                        "drpizza perfil --edit".cyan()
+                    ),
+                    Err(e) => eprintln!("Não foi possível iniciar as notificações: {}", e),
                 }
             }
             println!("{}", "\n🍕 Aguarde sua pizza! Bom apetite!".green().bold());
@@ -1005,6 +978,9 @@ fn build_pix_payment_output(detail: &crate::models::OrderDetail) -> Option<Strin
             .contains("pix")
     }) {
         let mut lines: Vec<String> = vec!["💠 Pagamento PIX".to_string()];
+        if let Some(deadline) = payment.pix_deadline_line(chrono::Local::now()) {
+            lines.push(deadline);
+        }
 
         if let Some(copy_paste) = payment.pix_qr_copy_paste.as_deref() {
             let copy_paste = copy_paste.trim();
@@ -1056,6 +1032,12 @@ fn selection_to_cart_item(sel: MenuSelection) -> CartItem {
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "Tradicional".to_string());
     let crust_id = sel.crust.as_ref().map(|c| c.id);
+    let current_base = sel.item.get_current_price();
+    let base_price = if current_base > 0.0 {
+        current_base
+    } else {
+        0.0
+    };
 
     CartItem {
         item_id: sel.item.id,
@@ -1072,16 +1054,61 @@ fn selection_to_cart_item(sel: MenuSelection) -> CartItem {
         extras: sel.extras,
         price: item_price,
         price_without_discounts: item_price_without_discounts,
+        base_price,
     }
 }
 
-fn calculate_selection_price(sel: &MenuSelection) -> f64 {
-    let mut item_price = sel.item.get_current_price();
+fn now_local() -> chrono::NaiveDateTime {
+    chrono::Local::now().naive_local()
+}
 
-    if !sel.flavors.is_empty() && item_price <= 0.0 {
-        let flavors_total: f64 = sel.flavors.iter().map(|f| f.price).sum();
-        item_price = flavors_total / sel.flavors.len() as f64;
-    }
+/// Re-checks cart items against time-bound availability and promotional prices
+/// (e.g. Happy Hour ending mid-checkout). Updates/removes items in place and
+/// returns one notice per change; empty means the cart is still valid.
+fn refresh_cart_prices(
+    cart: &mut Vec<CartItem>,
+    full_menu: &[MenuCategory],
+    now: chrono::NaiveDateTime,
+) -> Vec<String> {
+    let mut notices = Vec::new();
+    cart.retain_mut(|cart_item| {
+        let found = full_menu.iter().find_map(|category| {
+            category
+                .items
+                .iter()
+                .find(|i| i.id == cart_item.item_id && category.id == cart_item.category_id)
+                .map(|i| (category, i))
+        });
+        let Some((category, menu_item)) = found else {
+            notices.push(format!(
+                "{} não está mais no cardápio (removido)",
+                cart_item.name
+            ));
+            return false;
+        };
+        if !category.is_available_at(now) || !menu_item.is_available_at(now) {
+            notices.push(format!(
+                "{} não está disponível neste horário (removido)",
+                cart_item.name
+            ));
+            return false;
+        }
+        let new_base = menu_item.price_at(now);
+        if (new_base - cart_item.base_price).abs() > 0.005 {
+            notices.push(format!(
+                "{}: preço mudou de R$ {:.2} para R$ {:.2}",
+                cart_item.name, cart_item.base_price, new_base
+            ));
+            cart_item.price += new_base - cart_item.base_price;
+            cart_item.base_price = new_base;
+        }
+        true
+    });
+    notices
+}
+
+fn calculate_selection_price(sel: &MenuSelection) -> f64 {
+    let mut item_price = sel.item.get_current_price() + flavors_price(sel);
 
     if let Some(c) = &sel.crust {
         item_price += c.price;
@@ -1095,12 +1122,7 @@ fn calculate_selection_price(sel: &MenuSelection) -> f64 {
 }
 
 fn calculate_selection_price_without_discounts(sel: &MenuSelection) -> f64 {
-    let mut item_price = sel.item.price;
-
-    if !sel.flavors.is_empty() && item_price <= 0.0 {
-        let flavors_total: f64 = sel.flavors.iter().map(|f| f.price).sum();
-        item_price = flavors_total / sel.flavors.len() as f64;
-    }
+    let mut item_price = sel.item.price + flavors_price(sel);
 
     if let Some(c) = &sel.crust {
         item_price += c.price;
@@ -1113,30 +1135,72 @@ fn calculate_selection_price_without_discounts(sel: &MenuSelection) -> f64 {
     item_price
 }
 
-type SubitemCatalogKey = (u32, u32);
-type SubitemCatalogValue = (String, Option<String>, u32, String);
-type SubitemCatalog = HashMap<SubitemCatalogKey, SubitemCatalogValue>;
+fn flavors_price(sel: &MenuSelection) -> f64 {
+    sel.item
+        .add_ons
+        .iter()
+        .find(|group| group.is_flavor_group())
+        .map_or(0.0, |group| group.combined_price(&sel.flavors))
+}
 
-fn build_subitem_catalog(menu_data: &[crate::models::MenuCategory]) -> SubitemCatalog {
-    let mut map = HashMap::new();
-    for cat in menu_data {
-        for item in &cat.items {
-            for add_on in &item.add_ons {
-                for sub in &add_on.subitems {
-                    map.insert(
-                        (item.id, sub.id),
-                        (
-                            sub.name.clone(),
-                            sub.custom_code.clone(),
-                            add_on.id,
-                            add_on.name.clone(),
-                        ),
-                    );
-                }
-            }
+fn find_menu_item<'a>(full_menu: &'a [MenuCategory], item: &CartItem) -> Option<&'a MenuItem> {
+    full_menu
+        .iter()
+        .filter(|category| category.id == item.category_id)
+        .flat_map(|category| category.items.iter())
+        .find(|menu_item| menu_item.id == item.item_id)
+}
+
+/// Builds `order_subitems_attributes` with per-group pricing identical to the
+/// cardapioweb client; the API recomputes it and rejects mismatches.
+fn build_order_subitems(item: &CartItem, menu_item: &MenuItem) -> Vec<OrderSubItemPayload> {
+    // Distinct (subitem_id, quantity) in selection order.
+    let mut picks: Vec<(u32, u32)> = Vec::new();
+    let selections = item
+        .flavor_ids
+        .iter()
+        .map(|id| (*id, 1))
+        .chain(item.crust_id.map(|id| (id, 1)))
+        .chain(item.extras.iter().map(|e| (e.id, e.quantity)));
+    for (id, qty) in selections {
+        match picks.iter_mut().find(|(existing, _)| *existing == id) {
+            Some((_, total)) => *total += qty,
+            None => picks.push((id, qty)),
         }
     }
-    map
+
+    let mut subitems = Vec::new();
+    for group in &menu_item.add_ons {
+        let group_picks: Vec<(&SubItem, u32)> = picks
+            .iter()
+            .filter_map(|(id, qty)| {
+                group
+                    .subitems
+                    .iter()
+                    .find(|sub| sub.id == *id)
+                    .map(|sub| (sub, *qty))
+            })
+            .collect();
+        if group_picks.is_empty() {
+            continue;
+        }
+        picks.retain(|(id, _)| !group_picks.iter().any(|(sub, _)| sub.id == *id));
+        let lines = group.payload_lines(&group_picks);
+        for ((sub, qty), (price, total_price, count)) in group_picks.into_iter().zip(lines) {
+            subitems.push(OrderSubItemPayload {
+                subitem_id: sub.id,
+                quantity: qty,
+                price,
+                total_price,
+                add_on_selected_subitems_count: count,
+                name: sub.name.clone(),
+                custom_code: sub.custom_code.clone(),
+                add_on_id: group.id,
+                add_on_name: group.name.clone(),
+            });
+        }
+    }
+    subitems
 }
 
 fn compute_order_estimated_time(
@@ -1148,20 +1212,6 @@ fn compute_order_estimated_time(
     } else {
         preparation_time.unwrap_or(30)
     }
-}
-
-fn merge_subitem(subitems: &mut Vec<OrderSubItemPayload>, incoming: OrderSubItemPayload) {
-    if let Some(existing) = subitems.iter_mut().find(|sub| {
-        sub.subitem_id == incoming.subitem_id
-            && sub.add_on_id == incoming.add_on_id
-            && sub.custom_code == incoming.custom_code
-    }) {
-        existing.quantity += incoming.quantity;
-        existing.total_price += incoming.total_price;
-        return;
-    }
-
-    subitems.push(incoming);
 }
 
 async fn calculate_delivery_quote(
@@ -1199,13 +1249,254 @@ async fn calculate_delivery_quote(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pix_payment_output, calculate_selection_price_without_discounts,
-        compute_order_estimated_time, merge_subitem,
+        build_order_subitems, build_pix_payment_output, calculate_selection_price,
+        calculate_selection_price_without_discounts, compute_order_estimated_time,
+        refresh_cart_prices,
     };
     use crate::models::{
-        MenuItem, MenuSelection, OrderDetail, OrderSubItemPayload, PaymentValue, SelectedSubItem,
-        SubItem,
+        available_menu_at, AddOnGroup, AllowedTime, CartItem, ComboStep, MenuCategory, MenuItem,
+        MenuSelection, OrderDetail, OrderSubItemPayload, PaymentValue, PromotionalPriceSchedule,
+        SelectedSubItem, SubItem,
     };
+    use chrono::NaiveDate;
+
+    fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(y, m, d)
+            .and_then(|date| date.and_hms_opt(h, min, 0))
+            .expect("data valida")
+    }
+
+    /// Mirrors the API's "HAPPY HOUR (16h às 18h)" category.
+    fn happy_hour_menu() -> Vec<MenuCategory> {
+        let mut item = sample_selection().item;
+        item.id = 5528927;
+        item.name = "Pizza Grande".to_string();
+        item.price = 72.9;
+        item.promotional_price = Some(49.9);
+        item.promotional_price_schedules = vec![PromotionalPriceSchedule {
+            day: "friday".to_string(),
+            start: Some("16:00".to_string()),
+            end: Some("18:00".to_string()),
+        }];
+        vec![MenuCategory {
+            id: 665244,
+            name: "HAPPY HOUR (16h às 18h)".to_string(),
+            description: None,
+            items: vec![item],
+            allowed_times: vec![AllowedTime {
+                weekday: "friday".to_string(),
+                start_at: "16:00".to_string(),
+                end_at: "18:00".to_string(),
+            }],
+        }]
+    }
+
+    fn flavor_selection(base: f64, calc: &str, flavor_prices: &[f64]) -> MenuSelection {
+        let flavors: Vec<SubItem> = flavor_prices
+            .iter()
+            .enumerate()
+            .map(|(i, price)| SubItem {
+                id: i as u32 + 1,
+                name: format!("Sabor {}", i + 1),
+                custom_code: None,
+                price: *price,
+            })
+            .collect();
+        let mut sel = sample_selection();
+        sel.item.price = base;
+        sel.item.promotional_price = None;
+        sel.item.promotional_price_active = false;
+        sel.item.add_ons = vec![AddOnGroup {
+            id: 1,
+            name: "Sabores Pizza - 2 Sabores".to_string(),
+            subitems: flavors.clone(),
+            price_calculation_type: Some(calc.to_string()),
+            minimum_price: None,
+        }];
+        sel.flavors = flavors;
+        sel.crust = None;
+        sel.extras = vec![];
+        sel
+    }
+
+    #[test]
+    fn flavor_prices_follow_price_calculation_type() {
+        // "Grande mais pedidas": base 65.90 + SUM(Pepperoni 5.00, Frango 5.50).
+        let sum = flavor_selection(65.9, "SUM", &[5.0, 5.5]);
+        assert!((calculate_selection_price(&sum) - 76.4).abs() < 1e-9);
+        // "Pizza Grande - até 2 Sabores": base 0 + MEAN(82.90, 84.90).
+        let mean = flavor_selection(0.0, "MEAN", &[82.9, 84.9]);
+        assert!((calculate_selection_price(&mean) - 83.9).abs() < 1e-9);
+        let max = flavor_selection(0.0, "MAX", &[82.9, 84.9]);
+        assert!((calculate_selection_price(&max) - 84.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mean_flavor_subitems_split_group_price_like_web_client() {
+        // Failing order: Pizza Grande 2 sabores (MEAN), Frango c/ cream cheese 86.90
+        // + Pepperoni 82.90, borda tradicional (SUM, 0.00).
+        let mut sel = flavor_selection(0.0, "MEAN", &[86.9, 82.9]);
+        let crust = SubItem {
+            id: 99,
+            name: "Borda tradicional".to_string(),
+            custom_code: None,
+            price: 0.0,
+        };
+        sel.item.add_ons.push(AddOnGroup {
+            id: 2,
+            name: "Que tal uma borda Recheada?".to_string(),
+            subitems: vec![crust.clone()],
+            price_calculation_type: Some("SUM".to_string()),
+            minimum_price: None,
+        });
+        sel.crust = Some(crust);
+        let menu_item = sel.item.clone();
+        let cart_item = super::selection_to_cart_item(sel);
+        assert!((cart_item.price - 84.9).abs() < 1e-9);
+        assert_eq!(cart_item.base_price, 0.0);
+
+        let subitems: Vec<OrderSubItemPayload> = build_order_subitems(&cart_item, &menu_item);
+        assert_eq!(subitems.len(), 3);
+        for flavor in &subitems[..2] {
+            assert_eq!(flavor.add_on_id, 1);
+            assert!((flavor.total_price - 42.45).abs() < 1e-9);
+            assert!((flavor.price - 42.45).abs() < 1e-9);
+            assert_eq!(flavor.add_on_selected_subitems_count, Some(2));
+        }
+        assert_eq!(subitems[2].add_on_id, 2);
+        assert_eq!(subitems[2].add_on_selected_subitems_count, None);
+        let sum: f64 = subitems.iter().map(|s| s.total_price).sum();
+        assert!((cart_item.base_price + sum - cart_item.price).abs() < 1e-9);
+    }
+
+    #[test]
+    fn display_price_matches_web_catalog_rules() {
+        let at_1730 = at(2026, 11, 20, 17, 30);
+        // Flavor-priced pizza: base 0 + flavor group minimum.
+        let mut sel = flavor_selection(0.0, "MEAN", &[82.9, 84.9]);
+        sel.item.add_ons[0].minimum_price = Some(72.9);
+        let price = sel.item.display_price_at(at_1730);
+        assert!(price.starts_at && price.original.is_none());
+        assert!((price.value - 72.9).abs() < 1e-9);
+
+        // Active promotion keeps the old price for display.
+        let promo = &happy_hour_menu()[0].items[0];
+        let price = promo.display_price_at(at_1730);
+        assert_eq!((price.value, price.original), (49.9, Some(72.9)));
+
+        // Combos show the sum of their steps.
+        let mut combo = sample_selection().item;
+        combo.kind = "combo".to_string();
+        combo.combo_steps = vec![
+            ComboStep { price: Some(89.9) },
+            ComboStep { price: Some(10.0) },
+        ];
+        assert!((combo.display_price_at(at_1730).value - 99.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pix_deadline_shows_time_left_or_expired() {
+        let payment = PaymentValue {
+            total: 10.0,
+            payment_type: None,
+            payment_method: Some("pix_auto".to_string()),
+            status: None,
+            pix_qr_image: None,
+            pix_qr_copy_paste: None,
+            pix_expires_at: Some("2026-11-21T19:42:00-03:00".to_string()),
+        };
+        let now = |h, m| {
+            chrono::DateTime::parse_from_rfc3339(&format!("2026-11-21T{:02}:{:02}:00-03:00", h, m))
+                .expect("data valida")
+                .with_timezone(&chrono::Local)
+        };
+        let line = payment
+            .pix_deadline_line(now(19, 12))
+            .expect("linha do pix");
+        assert!(line.contains("(30 min)"), "{}", line);
+        assert_eq!(
+            payment.pix_deadline_line(now(19, 50)).as_deref(),
+            Some("⌛ Prazo do PIX expirou")
+        );
+        let no_deadline = PaymentValue {
+            pix_expires_at: None,
+            ..payment
+        };
+        assert!(no_deadline.pix_deadline_line(now(19, 12)).is_none());
+    }
+
+    #[test]
+    fn promotional_price_respects_schedule() {
+        let item = &happy_hour_menu()[0].items[0];
+        // 2026-11-20 is a Friday.
+        assert_eq!(item.price_at(at(2026, 11, 20, 17, 30)), 49.9);
+        assert_eq!(item.price_at(at(2026, 11, 20, 18, 0)), 49.9);
+        assert_eq!(item.price_at(at(2026, 11, 20, 18, 46)), 72.9);
+        assert_eq!(item.price_at(at(2026, 11, 21, 17, 0)), 72.9);
+    }
+
+    #[test]
+    fn time_restricted_category_is_hidden_outside_window() {
+        let menu = happy_hour_menu();
+        assert_eq!(available_menu_at(&menu, at(2026, 11, 20, 17, 0)).len(), 1);
+        assert!(available_menu_at(&menu, at(2026, 11, 20, 18, 46)).is_empty());
+        assert!(available_menu_at(&menu, at(2026, 11, 21, 17, 0)).is_empty());
+    }
+
+    #[test]
+    fn refresh_cart_drops_items_whose_window_closed_mid_checkout() {
+        let menu = happy_hour_menu();
+        let mut cart = vec![CartItem {
+            item_id: 5528927,
+            name: "Pizza Grande".to_string(),
+            custom_code: None,
+            print_area_id: None,
+            second_print_area_id: None,
+            category_id: 665244,
+            category_name: "HAPPY HOUR (16h às 18h)".to_string(),
+            flavors: vec![],
+            flavor_ids: vec![],
+            crust: "Tradicional".to_string(),
+            crust_id: None,
+            extras: vec![],
+            price: 49.9,
+            price_without_discounts: 72.9,
+            base_price: 49.9,
+        }];
+
+        assert!(refresh_cart_prices(&mut cart, &menu, at(2026, 11, 20, 17, 59)).is_empty());
+        let notices = refresh_cart_prices(&mut cart, &menu, at(2026, 11, 20, 18, 46));
+        assert_eq!(notices.len(), 1);
+        assert!(cart.is_empty());
+    }
+
+    #[test]
+    fn refresh_cart_updates_price_when_only_promotion_expires() {
+        let mut menu = happy_hour_menu();
+        menu[0].allowed_times.clear();
+        let mut cart = vec![CartItem {
+            item_id: 5528927,
+            name: "Pizza Grande".to_string(),
+            custom_code: None,
+            print_area_id: None,
+            second_print_area_id: None,
+            category_id: 665244,
+            category_name: String::new(),
+            flavors: vec![],
+            flavor_ids: vec![],
+            crust: "Borda".to_string(),
+            crust_id: None,
+            extras: vec![],
+            price: 49.9 + 15.9,
+            price_without_discounts: 72.9 + 15.9,
+            base_price: 49.9,
+        }];
+
+        let notices = refresh_cart_prices(&mut cart, &menu, at(2026, 11, 20, 18, 46));
+        assert_eq!(notices.len(), 1);
+        assert!((cart[0].price - (72.9 + 15.9)).abs() < 1e-9);
+        assert_eq!(cart[0].base_price, 72.9);
+    }
 
     fn sample_selection() -> MenuSelection {
         MenuSelection {
@@ -1221,6 +1512,9 @@ mod tests {
                 print_area_id: Some(16062),
                 second_print_area_id: None,
                 add_ons: vec![],
+                allowed_times: vec![],
+                promotional_price_schedules: vec![],
+                combo_steps: vec![],
             },
             category_id: 470669,
             category_name: "6 ANOS DO DOUTOR".to_string(),
@@ -1272,52 +1566,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_subitem_accumulates_matching_entries() {
-        let mut subitems = vec![OrderSubItemPayload {
-            subitem_id: 2118968,
-            quantity: 1,
-            price: 0.0,
-            total_price: 0.0,
-            name: "Frango com Catupiry".to_string(),
-            custom_code: Some("x.17744752".to_string()),
-            add_on_id: 560168,
-            add_on_name: "Escolha até 2 sabores:".to_string(),
-        }];
-
-        merge_subitem(
-            &mut subitems,
-            OrderSubItemPayload {
-                subitem_id: 2118968,
-                quantity: 1,
-                price: 0.0,
-                total_price: 0.0,
-                name: "Frango com Catupiry".to_string(),
-                custom_code: Some("x.17744752".to_string()),
-                add_on_id: 560168,
-                add_on_name: "Escolha até 2 sabores:".to_string(),
-            },
-        );
-
-        merge_subitem(
-            &mut subitems,
-            OrderSubItemPayload {
-                subitem_id: 866257,
-                quantity: 1,
-                price: 0.0,
-                total_price: 0.0,
-                name: "Borda tradicional".to_string(),
-                custom_code: Some("x.1374488".to_string()),
-                add_on_id: 205099,
-                add_on_name: "Bordas".to_string(),
-            },
-        );
-
-        assert_eq!(subitems.len(), 2);
-        assert_eq!(subitems[0].quantity, 2);
-        assert_eq!(subitems[1].subitem_id, 866257);
-    }
-
-    #[test]
     fn pix_payment_output_contains_terminal_qr_for_copy_paste() {
         let detail = OrderDetail {
             id: 1,
@@ -1341,6 +1589,7 @@ mod tests {
                 pix_qr_copy_paste: Some(
                     "00020101021226930014BR.GOV.BCB.PIX2571pix.example/charge/12345".to_string(),
                 ),
+                pix_expires_at: None,
             }],
             status_changes: vec![],
             client: None,

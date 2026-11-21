@@ -38,8 +38,14 @@ drpizza pedir --stateless
 
 Observações:
 
+- Adicionais são escolhidos numa única linha pelos números da lista: `1 3x2` adiciona o item 1 e duas unidades do item 3; ENTER pula.
+- Categorias/itens com horário restrito (ex.: Happy Hour) só aparecem dentro da janela, e preços promocionais só valem no horário da promoção.
+- O preço dos sabores segue a regra do cardápio (`price_calculation_type`): soma (`SUM`), média (`MEAN`), menor (`MIN`) ou maior valor (`MAX`), igual ao app web.
+- O `pedir` sempre busca o cardápio atualizado; se a API falhar, o pedido é interrompido em vez de usar o cache (preços desatualizados seriam recusados).
+- Ao confirmar, os preços são revalidados: se a janela de um item ou promoção fechou durante o checkout, o item é removido ou o preço atualizado e o resumo é exibido novamente.
 - A confirmação final permite editar pagamento, observação, troco, itens e endereço.
-- Se o pagamento for PIX, o final do fluxo exibe QR Code no terminal e também o código "copia e cola".
+- Se o pagamento for PIX, o final do fluxo exibe QR Code no terminal, o código "copia e cola" e o prazo para pagamento (após ele o pedido é cancelado automaticamente).
+- Após enviar o pedido, um processo em segundo plano acompanha o status (a cada 30s, por até 4h) e envia uma notificação no desktop a cada mudança (ex.: "Saiu para entrega!"). Usa `notify-send` (Linux) ou `osascript` (macOS). Desative em `drpizza perfil --edit`.
 - Pagamentos em cartão de crédito, cartão de débito e dinheiro são realizados na entrega.
 - No resumo final:
   - `C` confirma
@@ -49,6 +55,8 @@ Observações:
 ### `cardapio`
 
 Exibe/navega no cardápio.
+
+Preços seguem o app web: itens cujo preço depende dos sabores aparecem como "a partir de R$ X", combos mostram a soma das etapas e promoções exibem o preço original "(de R$ X)".
 
 Flags:
 
@@ -89,12 +97,19 @@ drpizza unidades --default 0
 
 ### `status` (alias: `pedido`)
 
-Mostra o último pedido encontrado.
+Mostra o último pedido encontrado. Se houver PIX pendente, mostra o prazo de pagamento.
+
+Flags:
+
+| Flag | Descrição |
+|---|---|
+| `-w`, `--watch` | Acompanha o pedido no terminal e notifica a cada mudança de status (Ctrl+C para sair) |
 
 Exemplos:
 
 ```bash
 drpizza status
+drpizza status --watch
 drpizza status -u 0
 # compatibilidade
 drpizza pedido
@@ -155,7 +170,7 @@ Flags:
 
 | Flag | Descrição |
 |---|---|
-| `-e`, `--edit` | Edita nome, telefone e senha auth |
+| `-e`, `--edit` | Edita nome, telefone, senha auth e notificações de status (ativadas por padrão) |
 
 Exemplos:
 

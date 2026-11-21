@@ -42,8 +42,7 @@ fn print_full_menu(menu_data: &[MenuCategory]) {
 
         for item in &category.items {
             let num = format!("[{:02}]", counter).cyan().bold();
-            let price = item.get_current_price();
-            let price_str = format!("R$ {:.2}", price).green().bold();
+            let price_str = format_item_price(item);
             println!(" {} {:.<45} {}", num, item.name.white(), price_str);
 
             if let Some(desc) = &item.description {
@@ -146,8 +145,7 @@ fn show_category_items(category: &MenuCategory) {
 
     for (i, item) in category.items.iter().enumerate() {
         let num = format!("[{:02}]", i + 1).cyan().bold();
-        let price = item.get_current_price();
-        let price_str = format!("R$ {:.2}", price).green().bold();
+        let price_str = format_item_price(item);
         println!(" {} {:.<45} {}", num, item.name.white(), price_str);
 
         if let Some(desc) = &item.description {
@@ -172,8 +170,7 @@ fn select_category_item(category: &MenuCategory) -> Option<MenuSelection> {
 
     for (i, item) in category.items.iter().enumerate() {
         let num = format!("[{:02}]", i + 1).cyan().bold();
-        let price = item.get_current_price();
-        let price_str = format!("R$ {:.2}", price).green().bold();
+        let price_str = format_item_price(item);
         println!(" {} {:.<45} {}", num, item.name.white(), price_str);
 
         if let Some(desc) = &item.description {
@@ -331,7 +328,6 @@ fn select_crust(item: &MenuItem) -> Option<SubItem> {
 }
 
 fn select_other_addons(item: &MenuItem) -> Vec<SelectedSubItem> {
-    let mut selected = Vec::new();
     let mut other_groups: Vec<&AddOnGroup> = item
         .add_ons
         .iter()
@@ -339,47 +335,125 @@ fn select_other_addons(item: &MenuItem) -> Vec<SelectedSubItem> {
         .collect();
 
     if other_groups.is_empty() {
-        return selected;
+        return Vec::new();
     }
 
     other_groups.sort_by(|a, b| a.name.cmp(&b.name));
     println!("\n{}", "Adicionais".yellow().bold());
 
+    // Flat numbering across groups so a single prompt covers everything.
+    let mut options: Vec<(&AddOnGroup, &SubItem)> = Vec::new();
     for group in other_groups {
         println!("  {}", group.name.bold());
         for sub in &group.subitems {
+            options.push((group, sub));
             let price_label = if sub.price > 0.0 {
-                format!(" (+R$ {:.2})", sub.price)
+                format!(" +R$ {:.2}", sub.price).green().to_string()
             } else {
                 String::new()
             };
-            let prompt = format!(
-                "    Quantidade de {}{} (0 para não adicionar): ",
-                sub.name, price_label
+            println!(
+                "    [{}] {}{}",
+                options.len().to_string().cyan(),
+                sub.name,
+                price_label
             );
-            let quantity = loop {
-                if let Some(qty) = ui::read_int(&prompt) {
-                    break qty;
-                }
-                println!("{}", "Quantidade inválida.".red());
-            };
-
-            if quantity > 0 {
-                selected.push(SelectedSubItem {
-                    id: sub.id,
-                    name: sub.name.clone(),
-                    price: sub.price,
-                    quantity,
-                    add_on_name: group.name.clone(),
-                });
-            }
         }
+    }
+
+    let prompt = format!(
+        "{} ",
+        "Adicionais (ex: 1 3x2 = item 1 + duas vezes o item 3; ENTER para nenhum):".bright_black()
+    );
+    let picks = loop {
+        let input = ui::read_input(&prompt);
+        match parse_addon_picks(&input, options.len()) {
+            Ok(picks) => break picks,
+            Err(msg) => println!("{}", msg.red()),
+        }
+    };
+
+    let selected: Vec<SelectedSubItem> = picks
+        .into_iter()
+        .map(|(idx, quantity)| {
+            let (group, sub) = options[idx - 1];
+            SelectedSubItem {
+                id: sub.id,
+                name: sub.name.clone(),
+                price: sub.price,
+                quantity,
+                add_on_name: group.name.clone(),
+            }
+        })
+        .collect();
+
+    if !selected.is_empty() {
+        let summary: Vec<String> = selected
+            .iter()
+            .map(|e| format!("{}x {}", e.quantity, e.name))
+            .collect();
+        println!("  {} {}", "Adicionado:".green(), summary.join(", "));
     }
 
     selected
 }
 
+/// Parses `"1 3x2, 5"` into `[(1,1), (3,2), (5,1)]` (1-based indexes, merged
+/// by index in first-seen order). Empty input means no add-ons.
+fn parse_addon_picks(input: &str, max_index: usize) -> Result<Vec<(usize, u32)>, String> {
+    let mut picks: Vec<(usize, u32)> = Vec::new();
+    for token in input
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+    {
+        let lower = token.to_lowercase();
+        let (idx_part, qty_part) = match lower.split_once(['x', '*']) {
+            Some((i, q)) => (i, Some(q)),
+            None => (lower.as_str(), None),
+        };
+        let idx: usize = idx_part
+            .parse()
+            .map_err(|_| format!("Entrada inválida: '{}'.", token))?;
+        if idx == 0 || idx > max_index {
+            return Err(format!(
+                "Opção {} não existe (escolha de 1 a {}).",
+                idx, max_index
+            ));
+        }
+        let qty: u32 = match qty_part {
+            Some(q) => q
+                .parse()
+                .ok()
+                .filter(|q| *q > 0)
+                .ok_or_else(|| format!("Quantidade inválida em '{}'.", token))?,
+            None => 1,
+        };
+        match picks.iter_mut().find(|(i, _)| *i == idx) {
+            Some((_, existing)) => *existing += qty,
+            None => picks.push((idx, qty)),
+        }
+    }
+    Ok(picks)
+}
+
 // --- Helpers ---
+
+/// "R$ 89.90 (de R$ 109.90)" / "a partir de R$ 72.90", like the web catalog.
+fn format_item_price(item: &MenuItem) -> String {
+    let price = item.display_price();
+    let mut out = String::new();
+    if price.starts_at {
+        out.push_str(&format!("{} ", "a partir de".bright_black()));
+    }
+    out.push_str(&format!("R$ {:.2}", price.value).green().bold().to_string());
+    if let Some(original) = price.original {
+        out.push_str(&format!(
+            " {}",
+            format!("(de R$ {:.2})", original).bright_black()
+        ));
+    }
+    out
+}
 
 #[derive(PartialEq)]
 enum AddonKind {
@@ -462,4 +536,31 @@ fn preview_list<T: AsRef<str>>(items: &[T], max_items: usize) -> String {
         shown.push(format!("... +{} opções", items.len() - max_items));
     }
     shown.join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_addon_picks;
+
+    #[test]
+    fn addon_picks_empty_input_selects_nothing() {
+        assert_eq!(parse_addon_picks("", 5), Ok(vec![]));
+        assert_eq!(parse_addon_picks("   ", 5), Ok(vec![]));
+    }
+
+    #[test]
+    fn addon_picks_parse_indexes_quantities_and_merge_duplicates() {
+        assert_eq!(
+            parse_addon_picks("1 3x2, 5X1 1", 5),
+            Ok(vec![(1, 2), (3, 2), (5, 1)])
+        );
+    }
+
+    #[test]
+    fn addon_picks_reject_out_of_range_and_garbage() {
+        assert!(parse_addon_picks("6", 5).is_err());
+        assert!(parse_addon_picks("0", 5).is_err());
+        assert!(parse_addon_picks("2x0", 5).is_err());
+        assert!(parse_addon_picks("abc", 5).is_err());
+    }
 }

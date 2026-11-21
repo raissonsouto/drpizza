@@ -52,6 +52,15 @@ fn display_profile(opts: &AppOptions) {
                 }
             );
 
+            println!(
+                "  Notificações: {}",
+                if config.notifications_enabled() {
+                    "ativadas".green().to_string()
+                } else {
+                    "desativadas".yellow().to_string()
+                }
+            );
+
             if !config.addresses.is_empty() {
                 println!(
                     "\n  {} ({} endereço(s) salvo(s))",
@@ -146,6 +155,21 @@ async fn edit_profile(opts: &AppOptions) {
     ));
     if !auth_password.is_empty() {
         config.auth_password = Some(auth_password);
+    }
+
+    let notifications_default = if config.notifications_enabled() {
+        "S/n"
+    } else {
+        "s/N"
+    };
+    let notifications = ui::read_input(&format!(
+        "Notificações de status do pedido? [{}]: ",
+        notifications_default
+    ));
+    match notifications.trim().to_uppercase().as_str() {
+        "S" => config.notificacoes = Some(true),
+        "N" => config.notificacoes = Some(false),
+        _ => {}
     }
 
     config::save_user_config(&config, opts);
